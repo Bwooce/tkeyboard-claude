@@ -238,11 +238,22 @@ Process inputs immediately and update display with context options.
 
 ## Why This Design?
 
-- **No Hooks**: Simple agent-based approach
+- **Agent-Based**: Simple polling approach with automatic failover
 - **No Blocking**: Doesn't interfere with typing
 - **Immediate Response**: 2-second max latency
 - **Smart Context**: Adapts to conversation
+- **Rate Limit Detection**: Bridge server detects when agent stops (likely rate limited) and automatically updates keyboard
 - **Future-Proof**: Easy to extend
+
+### Rate Limit Handling
+
+When Claude hits an API rate limit, the agent stops running. The bridge server detects this automatically:
+- If agent hasn't polled for 10 seconds → Assumes rate limit
+- Sends countdown state to keyboard (60s estimate)
+- Keyboard displays countdown timer + Continue button
+- When agent resumes polling → Automatically clears rate limit state
+
+**Note:** Hooks can't detect rate limits either, since the entire Claude session pauses during rate limits. The bridge server's external monitoring is the only reliable detection method.
 
 ## License
 

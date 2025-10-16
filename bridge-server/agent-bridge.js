@@ -20,6 +20,8 @@ const config = {
 let tkeyboardClient = null;
 const inputQueue = [];
 const MAX_QUEUE_SIZE = 20;
+let lastAgentPoll = Date.now();
+const AGENT_TIMEOUT = 10000; // 10 seconds without polling = assume rate limited
 
 // WebSocket server for T-Keyboard
 const wss = new WebSocket.Server({ port: config.wsPort });
@@ -103,6 +105,9 @@ const server = http.createServer((req, res) => {
         const inputs = [...inputQueue];
         inputQueue.length = 0;  // Clear queue
 
+        // Update last poll time - agent is alive
+        lastAgentPoll = Date.now();
+
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ inputs }));
 
@@ -180,6 +185,43 @@ const server = http.createServer((req, res) => {
     }
 });
 
+// Monitor agent health and detect rate limits
+let agentWasAlive = true;
+setInterval(() => {
+    const timeSinceLastPoll = Date.now() - lastAgentPoll;
+
+    if (timeSinceLastPoll > AGENT_TIMEOUT && agentWasAlive) {
+        // Agent stopped polling - likely rate limited
+        console.log('⚠️  Agent stopped polling - assuming rate limit');
+        agentWasAlive = false;
+
+        if (tkeyboardClient && tkeyboardClient.readyState === WebSocket.OPEN) {
+            // Estimate countdown (Claude typically has 60s rate limits)
+            const estimatedWait = 60;
+
+            sendToKeyboard({
+                type: 'status',
+                state: 'limit',
+                countdown: estimatedWait,
+                message: 'Rate limit detected - agent stopped'
+            });
+
+            console.log(`Sent rate limit state to keyboard (${estimatedWait}s countdown)`);
+        }
+    } else if (timeSinceLastPoll <= AGENT_TIMEOUT && !agentWasAlive) {
+        // Agent resumed - rate limit ended
+        console.log('✓ Agent resumed polling - rate limit ended');
+        agentWasAlive = true;
+
+        if (tkeyboardClient && tkeyboardClient.readyState === WebSocket.OPEN) {
+            sendToKeyboard({
+                type: 'status',
+                state: 'idle'
+            });
+        }
+    }
+}, 5000); // Check every 5 seconds
+
 server.listen(config.httpPort, () => {
     console.log(`
 ╔════════════════════════════════════════╗
@@ -190,6 +232,7 @@ server.listen(config.httpPort, () => {
 ╠════════════════════════════════════════╣
 ║   Status: Running                      ║
 ║   Mode: Agent-Optimized                ║
+║   Agent Timeout: ${AGENT_TIMEOUT / 1000}s                 ║
 ╚════════════════════════════════════════╝
 
 Ready for connections...
