@@ -247,13 +247,24 @@ Process inputs immediately and update display with context options.
 
 ### Rate Limit Handling
 
-When Claude hits an API rate limit, the agent stops running. The bridge server detects this automatically:
-- If agent hasn't polled for 10 seconds → Assumes rate limit
-- Sends countdown state to keyboard (60s estimate)
-- Keyboard displays countdown timer + Continue button
-- When agent resumes polling → Automatically clears rate limit state
+**Dual-Mode Detection:**
 
-**Note:** Hooks can't detect rate limits either, since the entire Claude session pauses during rate limits. The bridge server's external monitoring is the only reliable detection method.
+1. **Agent Reports (Best)**: When the agent catches a rate limit error, it extracts the `retry_after` value and sends it before stopping
+   - Shows accurate countdown timer
+   - User knows exactly when to retry
+
+2. **Bridge Detects (Fallback)**: If agent doesn't report (or can't), bridge server monitors polling
+   - If no poll for 10 seconds → Assumes rate limit
+   - Shows elapsed time with animated "Waiting..." (no fake countdown)
+   - Automatically detects when agent resumes
+
+**Why Both?**
+- Agent **tries** to report retry_after from error response (if it can)
+- But rate limits might stop agent before it reports
+- Bridge server catches this case with monitoring
+- Result: Always get feedback, countdown when available
+
+**Note:** The Claude API error response includes retry-after duration in seconds. The agent attempts to extract and report this before fully stopping.
 
 ## License
 

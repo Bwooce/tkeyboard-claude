@@ -28,7 +28,8 @@ I need you to set up and monitor my T-Keyboard device. Please:
      * When thinking: First button should be "Stop" with stop.rgb image
      * After completing: POST {"type":"status","state":"idle"}
      * On API error: POST {"type":"status","state":"error","message":"error text"}
-     * Note: Rate limits are auto-detected by bridge server (no action needed)
+     * On rate limit: Try to POST {"type":"status","state":"limit","countdown":<retry_after>}
+       (Extract retry_after from error response if available, otherwise bridge auto-detects)
 
 5. Generate custom icons for new contexts:
    - Check if icon exists in bridge-server/images/cache/

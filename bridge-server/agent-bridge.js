@@ -158,6 +158,12 @@ const server = http.createServer((req, res) => {
                         state: 'error',
                         message: data.state?.message
                     });
+                } else if (data.event === 'rate_limit') {
+                    sendToKeyboard({
+                        type: 'status',
+                        state: 'limit',
+                        countdown: data.state?.countdown || data.state?.retry_after || 60
+                    });
                 }
 
                 res.writeHead(200);
@@ -196,17 +202,13 @@ setInterval(() => {
         agentWasAlive = false;
 
         if (tkeyboardClient && tkeyboardClient.readyState === WebSocket.OPEN) {
-            // Estimate countdown (Claude typically has 60s rate limits)
-            const estimatedWait = 60;
-
             sendToKeyboard({
                 type: 'status',
                 state: 'limit',
-                countdown: estimatedWait,
-                message: 'Rate limit detected - agent stopped'
+                message: 'Rate limit - waiting for recovery'
             });
 
-            console.log(`Sent rate limit state to keyboard (${estimatedWait}s countdown)`);
+            console.log('Sent rate limit state to keyboard');
         }
     } else if (timeSinceLastPoll <= AGENT_TIMEOUT && !agentWasAlive) {
         // Agent resumed - rate limit ended

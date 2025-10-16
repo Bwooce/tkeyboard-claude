@@ -94,8 +94,8 @@ enum ClaudeState {
 };
 
 ClaudeState claudeState = IDLE;
-int rateLimitCountdown = 0;
-unsigned long countdownLastUpdate = 0;
+unsigned long rateLimitStartTime = 0;
+int rateLimitCountdown = 0;  // 0 means unknown, show elapsed time
 
 // Function Declarations
 void setupHardware();
@@ -205,16 +205,17 @@ void loop() {
         optionsUpdated = false;
     }
 
-    // Update countdown if in rate limit state
-    if (claudeState == RATE_LIMITED && millis() - countdownLastUpdate > 1000) {
-        if (rateLimitCountdown > 0) {
-            rateLimitCountdown--;
-            drawCountdown(rateLimitCountdown);
-        } else {
-            claudeState = IDLE;
-            optionsUpdated = true;
+    // Update rate limit display
+    if (claudeState == RATE_LIMITED) {
+        static unsigned long lastUpdate = 0;
+        if (millis() - lastUpdate > 1000) {
+            // Countdown if we have a value
+            if (rateLimitCountdown > 0) {
+                rateLimitCountdown--;
+            }
+            drawRateLimitStatus();
+            lastUpdate = millis();
         }
-        countdownLastUpdate = millis();
     }
 
     // Update LED status
@@ -449,9 +450,13 @@ void processClaudeMessage(JsonDocument& doc) {
         } else if (stateStr == "error") {
             claudeState = ERROR;
         } else if (stateStr == "limit") {
+            if (claudeState != RATE_LIMITED) {
+                // Just entered rate limit state
+                rateLimitStartTime = millis();
+            }
             claudeState = RATE_LIMITED;
-            rateLimitCountdown = doc["countdown"];
-            countdownLastUpdate = millis();
+            // Get countdown if provided (0 if not)
+            rateLimitCountdown = doc["countdown"] | 0;
         }
 
         optionsUpdated = true;
@@ -485,12 +490,9 @@ void handleKeyPress(int key) {
 
     // Handle special states
     if (claudeState == RATE_LIMITED && key == 1) {
-        // Continue button during rate limit
-        if (rateLimitCountdown <= 0) {
-            sendKeyPress(key);
-            claudeState = IDLE;
-            optionsUpdated = true;
-        }
+        // Continue button during rate limit - just send it
+        // Agent may have resumed and we'll find out
+        sendKeyPress(key);
         return;
     }
 
@@ -539,8 +541,8 @@ void updateDisplays() {
         if (claudeState == RATE_LIMITED) {
             // Special display for rate limit
             if (i == 0) {
-                // Show countdown on first display
-                drawCountdown(rateLimitCountdown);
+                // Show rate limit status on first display
+                drawRateLimitStatus();
             } else {
                 displays[i]->fillScreen(BLACK);
             }
@@ -621,31 +623,62 @@ void drawTextOption(uint8_t display, const String& text, uint32_t color) {
     displays[display]->print(text);
 }
 
-void drawCountdown(int seconds) {
+void drawRateLimitStatus() {
     selectDisplay(0);
     displays[0]->fillScreen(BLACK);
-    displays[0]->setTextColor(YELLOW);
-    displays[0]->setTextSize(4);
+    displays[0]->setTextColor(RED);
 
+    // Title
+    displays[0]->setTextSize(2);
+    displays[0]->setCursor(10, 20);
+    displays[0]->print("Rate Limit");
+
+    int mins, secs;
     String timeStr;
-    if (seconds > 0) {
-        int mins = seconds / 60;
-        int secs = seconds % 60;
+
+    if (rateLimitCountdown > 0) {
+        // Countdown mode - we know when it ends
+        mins = rateLimitCountdown / 60;
+        secs = rateLimitCountdown % 60;
+
+        displays[0]->setTextColor(YELLOW);
+        displays[0]->setTextSize(3);
         timeStr = String(mins) + ":" + (secs < 10 ? "0" : "") + String(secs);
+        int16_t x = (SCREEN_WIDTH - timeStr.length() * 18) / 2;
+        displays[0]->setCursor(x, 55);
+        displays[0]->print(timeStr);
+
+        // Show "wait..." text
+        displays[0]->setTextColor(WHITE);
+        displays[0]->setTextSize(1);
+        displays[0]->setCursor(35, 95);
+        displays[0]->print("Please wait");
     } else {
-        timeStr = "NOW";
+        // Elapsed time mode - duration unknown
+        unsigned long elapsed = (millis() - rateLimitStartTime) / 1000;
+        mins = elapsed / 60;
+        secs = elapsed % 60;
+
+        displays[0]->setTextColor(YELLOW);
+        displays[0]->setTextSize(3);
+        timeStr = String(mins) + ":" + (secs < 10 ? "0" : "") + String(secs);
+        int16_t x = (SCREEN_WIDTH - timeStr.length() * 18) / 2;
+        displays[0]->setCursor(x, 55);
+        displays[0]->print(timeStr);
+
+        // Show "waiting..." with animated dots
+        displays[0]->setTextColor(WHITE);
+        displays[0]->setTextSize(1);
+        displays[0]->setCursor(25, 95);
+        displays[0]->print("Waiting");
+
+        // Animated dots
+        static int dotCount = 0;
+        dotCount = (dotCount + 1) % 4;
+        for (int i = 0; i < dotCount; i++) {
+            displays[0]->print(".");
+        }
     }
-
-    int16_t x = (SCREEN_WIDTH - timeStr.length() * 24) / 2;
-    displays[0]->setCursor(x, 40);
-    displays[0]->print(timeStr);
-
-    // Show "Continue" text below
-    displays[0]->setTextSize(1);
-    displays[0]->setCursor(35, 90);
-    displays[0]->print("Press to");
-    displays[0]->setCursor(35, 100);
-    displays[0]->print("continue");
 }
 
 void setLEDStatus() {
