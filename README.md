@@ -102,8 +102,17 @@ That's it! Press buttons on your T-Keyboard and Claude responds immediately.
 
 ## Context Examples
 
+**During Rate Limit:**
+- Display 1: Shows countdown or elapsed time
+- Display 2: **Continue** (green) - Try to resume when ready
+- Display 3: Blank
+- Display 4: Blank
+
 **During Errors:**
-- Debug | Retry | Skip | Help
+- Display 1: Pulsing "!" with "Error" and "Check console"
+- Display 2: **Continue** (green) - Dismiss error and resume
+- Display 3: **Retry** (orange) - Retry the last operation
+- Display 4: Blank
 
 **Code Review:**
 - Run | Test | Refactor | Explain

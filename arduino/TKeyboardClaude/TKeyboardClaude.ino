@@ -115,6 +115,8 @@ void sendKeyPress(int key);
 bool loadImageFromSPIFFS(const String& path, uint8_t display);
 void drawTextOption(uint8_t display, const String& text, uint32_t color);
 void drawCountdown(int seconds);
+void drawRateLimitStatus();
+void drawErrorStatus();
 void initializeDisplays();
 void selectDisplay(uint8_t display);
 
@@ -214,6 +216,15 @@ void loop() {
                 rateLimitCountdown--;
             }
             drawRateLimitStatus();
+            lastUpdate = millis();
+        }
+    }
+
+    // Update error display (for pulsing animation)
+    if (claudeState == ERROR) {
+        static unsigned long lastUpdate = 0;
+        if (millis() - lastUpdate > 50) {
+            drawErrorStatus();
             lastUpdate = millis();
         }
     }
@@ -489,11 +500,26 @@ void handleKeyPress(int key) {
     FastLED.show();
 
     // Handle special states
-    if (claudeState == RATE_LIMITED && key == 1) {
-        // Continue button during rate limit - just send it
-        // Agent may have resumed and we'll find out
-        sendKeyPress(key);
-        return;
+    if (claudeState == RATE_LIMITED) {
+        if (key == 2) {  // Key 2 is Continue during rate limit
+            sendKeyPress(key);
+            // Try to resume normal state
+            claudeState = IDLE;
+            optionsUpdated = true;
+            return;
+        }
+    }
+
+    if (claudeState == ERROR) {
+        if (key == 2) {  // Key 2 is Continue during error
+            sendKeyPress(key);
+            claudeState = IDLE;
+            optionsUpdated = true;
+            return;
+        } else if (key == 3) {  // Key 3 is Retry during error
+            sendKeyPress(key);
+            return;
+        }
     }
 
     // Handle config mode key combo (keys 1+4)
@@ -543,6 +569,23 @@ void updateDisplays() {
             if (i == 0) {
                 // Show rate limit status on first display
                 drawRateLimitStatus();
+            } else if (i == 1) {
+                // Show Continue button on second display
+                drawTextOption(1, "Continue", 0x00FF00);  // Green
+            } else {
+                displays[i]->fillScreen(BLACK);
+            }
+        } else if (claudeState == ERROR) {
+            // Special display for errors
+            if (i == 0) {
+                // Show error on first display
+                drawErrorStatus();
+            } else if (i == 1) {
+                // Show Continue button on second display
+                drawTextOption(1, "Continue", 0x00FF00);  // Green
+            } else if (i == 2) {
+                // Show Retry button on third display
+                drawTextOption(2, "Retry", 0xFFA500);  // Orange
             } else {
                 displays[i]->fillScreen(BLACK);
             }
@@ -679,6 +722,34 @@ void drawRateLimitStatus() {
             displays[0]->print(".");
         }
     }
+}
+
+void drawErrorStatus() {
+    selectDisplay(0);
+    displays[0]->fillScreen(BLACK);
+    displays[0]->setTextColor(RED);
+
+    // Title
+    displays[0]->setTextSize(2);
+    displays[0]->setCursor(20, 30);
+    displays[0]->print("Error");
+
+    // Show pulsing error icon (!)
+    static uint8_t brightness = 128;
+    static int8_t direction = 4;
+    brightness += direction;
+    if (brightness >= 255 || brightness <= 128) direction = -direction;
+
+    displays[0]->setTextColor(displays[0]->color565(brightness, 0, 0));
+    displays[0]->setTextSize(5);
+    displays[0]->setCursor(50, 60);
+    displays[0]->print("!");
+
+    // Show help text
+    displays[0]->setTextColor(WHITE);
+    displays[0]->setTextSize(1);
+    displays[0]->setCursor(15, 110);
+    displays[0]->print("Check console");
 }
 
 void setLEDStatus() {
