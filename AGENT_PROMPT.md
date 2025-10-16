@@ -23,7 +23,12 @@ I need you to set up and monitor my T-Keyboard device. Please:
 
 4. Update keyboard state via POST to http://localhost:8081/update:
    - Send appropriate button options when context changes
-   - Signal thinking/idle/error states
+   - IMPORTANT: Actively manage state transitions:
+     * Before processing: POST {"type":"status","state":"thinking"}
+     * When thinking: First button should be "Stop" with stop.rgb image
+     * After completing: POST {"type":"status","state":"idle"}
+     * On API error: POST {"type":"status","state":"error","message":"error text"}
+     * On rate limit: POST {"type":"status","state":"limit","countdown":60}
 
 5. Generate custom icons for new contexts:
    - Check if icon exists in bridge-server/images/cache/
