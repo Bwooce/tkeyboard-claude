@@ -1,0 +1,41 @@
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+
+# Bridge server state
+/tmp/tkeyboard-state.json
+
+# Generated images (keep cache directory but ignore generated files)
+images/generated/*.png
+images/cache/*.rgb
+
+# Arduino build files
+*.hex
+*.elf
+*.bin
+*.map
+
+# System files
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# IDE files
+.vscode/
+.idea/
+*.iml
+
+# Logs
+*.log
+
+# Local configuration
+config.local.json
+*.local
+
+# Test files
+test-*.js

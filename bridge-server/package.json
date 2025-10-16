@@ -1,0 +1,26 @@
+{
+  "name": "tkeyboard-claude-bridge",
+  "version": "1.0.0",
+  "description": "Bridge server for T-Keyboard-S3 Claude Code integration",
+  "main": "agent-bridge.js",
+  "scripts": {
+    "start": "node agent-bridge.js",
+    "start:debug": "DEBUG=true node agent-bridge.js",
+    "generate-images": "node generate-images.js",
+    "generate-emoji": "node generate-images.js --emoji",
+    "generate-text": "node generate-images.js --text",
+    "test": "curl -s http://localhost:8081/status | jq ."
+  },
+  "dependencies": {
+    "ws": "^8.14.0"
+  },
+  "devDependencies": {
+    "canvas": "^2.11.2",
+    "sharp": "^0.33.0"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "author": "",
+  "license": "MIT"
+}
