@@ -8,11 +8,13 @@
 #include <ArduinoJson.h>
 #include <Preferences.h>
 #include <SPIFFS.h>
-#include <ESPAsyncWebServer.h>
+#include <WebServer.h>
 #include <DNSServer.h>
-#include <esp_task_wdt.h>
+#include <ESPmDNS.h>
 #include <FastLED.h>
-#include <Arduino_GFX_Library.h>
+#include <SPI.h>
+#include <TFT_eSPI.h>
+#include <T-Keyboard_S3_Drive.h>
 
 // Hardware Pin Definitions (from T-Keyboard-S3 specs)
 #define KEY1_PIN 10
@@ -52,13 +54,12 @@
 // Global Objects
 Preferences preferences;
 WebSocketsClient webSocket;
-AsyncWebServer configServer(80);
+WebServer configServer(80);
 DNSServer dnsServer;
 CRGB leds[NUM_LEDS];
 
-// Display Objects (GC9107 driver)
-Arduino_DataBus *bus = new Arduino_ESP32SPI(TFT_DC, TFT_CS1, TFT_SCLK, TFT_MOSI, -1);
-Arduino_GFX *displays[4];
+// Display Object - Single TFT_eSPI instance with manual CS switching via N085_Screen_Set()
+TFT_eSPI tft = TFT_eSPI();  // Single display object for all 4 screens
 
 // State Variables
 struct SystemState {
@@ -113,12 +114,12 @@ void handleWebSocketEvent(WStype_t type, uint8_t* payload, size_t length);
 void processClaudeMessage(JsonDocument& doc);
 void sendKeyPress(int key);
 bool loadImageFromSPIFFS(const String& path, uint8_t display);
-void drawTextOption(uint8_t display, const String& text, uint32_t color);
-void drawCountdown(int seconds);
-void drawRateLimitStatus();
-void drawErrorStatus();
+void drawTextOption(uint8_t displayIndex, const String& text, uint32_t color);
+void drawLargeText(uint8_t displayIndex, const String& text, uint32_t color);
+void drawRateLimitTimer();
+void drawErrorIcon();
 void initializeDisplays();
-void selectDisplay(uint8_t display);
+void handleSerialCommands();
 
 // Interrupt handlers
 volatile bool keyInterrupts[4] = {false, false, false, false};
@@ -134,10 +135,6 @@ void setup() {
 
     Serial.println("T-Keyboard Claude Controller Starting...");
 
-    // Enable watchdog
-    esp_task_wdt_init(WDT_TIMEOUT, true);
-    esp_task_wdt_add(NULL);
-
     // Initialize PSRAM
     if (psramFound()) {
         Serial.printf("PSRAM found: %d bytes\n", ESP.getPsramSize());
@@ -147,11 +144,16 @@ void setup() {
 
     setupHardware();
     loadPreferences();
-    setupSPIFFS();
 
+    Serial.println("Skipping SPIFFS setup for now...");
+    // setupSPIFFS();  // Disabled temporarily - partition issues
+
+    Serial.println("Checking WiFi config mode flag...");
     if (state.wifiConfigMode) {
+        Serial.println("WiFi config mode flag is SET");
         enterConfigMode();
     } else {
+        Serial.println("WiFi config mode flag is NOT set, checking credentials...");
         setupWiFi();
         if (WiFi.status() == WL_CONNECTED) {
             setupWebSocket();
@@ -162,14 +164,12 @@ void setup() {
 }
 
 void loop() {
-    esp_task_wdt_reset();  // Reset watchdog
-
     // Handle key interrupts
     for (int i = 0; i < 4; i++) {
         if (keyInterrupts[i]) {
             keyInterrupts[i] = false;
-            if (millis() - keyDebounce[i] > 100) {  // Debounce
-                keyDebounce[i] = millis();
+            if (millis() - state.keyDebounce[i] > 100) {  // Debounce
+                state.keyDebounce[i] = millis();
                 handleKeyPress(i + 1);
             }
         }
@@ -192,17 +192,69 @@ void loop() {
             state.lastReconnect = millis();
         }
     } else if (!state.wifiConfigMode) {
-        // Try to reconnect WiFi
+        // Try to reconnect WiFi with exponential backoff
         static unsigned long lastWiFiRetry = 0;
-        if (millis() - lastWiFiRetry > 30000) {
-            Serial.println("WiFi disconnected, attempting reconnect...");
-            setupWiFi();
+        static unsigned long retryDelay = 5000;  // Start with 5 seconds
+        static const unsigned long MAX_RETRY_DELAY = 60000;  // Cap at 1 minute
+        static int retryCount = 0;
+
+        if (millis() - lastWiFiRetry > retryDelay) {
+            retryCount++;
+            Serial.printf("WiFi disconnected, retry attempt #%d (delay: %lus)...\n",
+                         retryCount, retryDelay / 1000);
+
+            // Update displays to show retry status (using different Y positions)
+            N085_Screen_Set(N085_Screen_1);
+            tft.fillScreen(TFT_BLACK);
+            tft.setTextSize(2);
+            tft.setTextColor(TFT_ORANGE);
+            tft.setCursor(15, 10);  // Top of screen
+            tft.print("Retry");
+
+            N085_Screen_Set(N085_Screen_2);
+            tft.fillScreen(TFT_BLACK);
+            tft.setTextSize(3);
+            tft.setTextColor(TFT_YELLOW);
+            tft.setCursor(40, 10);  // Top of screen
+            tft.print("#");
+            tft.print(retryCount);
+
+            N085_Screen_Set(N085_Screen_3);
+            tft.fillScreen(TFT_BLACK);
+            tft.setTextSize(2);
+            tft.setTextColor(TFT_CYAN);
+            tft.setCursor(25, 10);  // Top of screen
+            tft.print(retryDelay / 1000);
+            tft.setCursor(30, 35);
+            tft.print("sec");
+
+            N085_Screen_Set(N085_Screen_4);
+            tft.fillScreen(TFT_BLACK);
+            tft.setTextSize(2);
+            tft.setTextColor(TFT_WHITE);
+            tft.setCursor(25, 10);  // Top of screen
+            tft.print("wait");
+
+            // Attempt reconnection
+            WiFi.reconnect();
+            delay(5000);  // Give it 5 seconds to connect
+
+            if (WiFi.status() != WL_CONNECTED) {
+                // Failed - increase backoff (double the delay, capped at 1 minute)
+                retryDelay = min(retryDelay * 2, MAX_RETRY_DELAY);
+            } else {
+                // Success - reset backoff
+                Serial.println("WiFi reconnected!");
+                retryDelay = 5000;
+                retryCount = 0;
+            }
+
             lastWiFiRetry = millis();
         }
     }
 
-    // Update displays if needed
-    if (optionsUpdated) {
+    // Update displays if needed - only when WebSocket is connected
+    if (optionsUpdated && state.wsConnected) {
         updateDisplays();
         optionsUpdated = false;
     }
@@ -215,7 +267,8 @@ void loop() {
             if (rateLimitCountdown > 0) {
                 rateLimitCountdown--;
             }
-            drawRateLimitStatus();
+            // Redraw the timer display
+            drawRateLimitTimer();
             lastUpdate = millis();
         }
     }
@@ -224,7 +277,8 @@ void loop() {
     if (claudeState == ERROR) {
         static unsigned long lastUpdate = 0;
         if (millis() - lastUpdate > 50) {
-            drawErrorStatus();
+            // Redraw the error icon (for pulsing effect)
+            drawErrorIcon();
             lastUpdate = millis();
         }
     }
@@ -239,9 +293,14 @@ void loop() {
     // Handle config mode
     if (state.wifiConfigMode) {
         dnsServer.processNextRequest();
+        configServer.handleClient();
     }
 
-    delay(10);  // Small delay to prevent tight looping
+    // Handle serial commands
+    handleSerialCommands();
+
+    // Feed the watchdog
+    yield();
 }
 
 void setupHardware() {
@@ -257,96 +316,133 @@ void setupHardware() {
     attachInterrupt(digitalPinToInterrupt(KEY4_PIN), key4ISR, FALLING);
 
     // Initialize RGB LEDs
-    FastLED.addLeds<WS2812C, WS2812_DATA_PIN, GRB>(leds, NUM_LEDS);
+    FastLED.addLeds<WS2812, WS2812_DATA_PIN, GRB>(leds, NUM_LEDS);
     FastLED.setBrightness(64);  // Start at 25% brightness
 
-    // Initialize displays
+    // Initialize displays (includes backlight setup)
     initializeDisplays();
-
-    // Setup backlight PWM
-    ledcSetup(0, 5000, 8);  // Channel 0, 5kHz, 8-bit resolution
-    ledcAttachPin(TFT_BL, 0);
-    ledcWrite(0, state.backlightIntensity);
 
     Serial.println("Hardware initialized");
 }
 
-void initializeDisplays() {
-    // Initialize all 4 displays with shared bus
-    pinMode(TFT_CS1, OUTPUT);
-    pinMode(TFT_CS2, OUTPUT);
-    pinMode(TFT_CS3, OUTPUT);
-    pinMode(TFT_CS4, OUTPUT);
-
-    digitalWrite(TFT_CS1, HIGH);
-    digitalWrite(TFT_CS2, HIGH);
-    digitalWrite(TFT_CS3, HIGH);
-    digitalWrite(TFT_CS4, HIGH);
-
-    // Create display objects for each CS pin
-    displays[0] = new Arduino_GC9107(bus, TFT_RST, 0 /* rotation */);
-    displays[1] = new Arduino_GC9107(bus, TFT_RST, 0);
-    displays[2] = new Arduino_GC9107(bus, TFT_RST, 0);
-    displays[3] = new Arduino_GC9107(bus, TFT_RST, 0);
-
-    // Initialize each display
-    for (int i = 0; i < 4; i++) {
-        selectDisplay(i);
-        displays[i]->begin();
-        displays[i]->fillScreen(BLACK);
-        displays[i]->setTextColor(WHITE);
-        displays[i]->setTextSize(2);
-        displays[i]->setCursor(20, 56);
-        displays[i]->print("Ready");
+void selectDisplay(uint8_t index) {
+    // Use N085_Screen_Set() from T-Keyboard_S3_Drive library
+    // Maps index (0-3) to screen constants (N085_Screen_1 through N085_Screen_4)
+    // NOTE: Rotation is set ONCE during initialization, not per display selection (LILYGO pattern)
+    switch (index) {
+        case 0: N085_Screen_Set(N085_Screen_1); break;
+        case 1: N085_Screen_Set(N085_Screen_2); break;
+        case 2: N085_Screen_Set(N085_Screen_3); break;
+        case 3: N085_Screen_Set(N085_Screen_4); break;
+        default: N085_Screen_Set(N085_Screen_1); break;
     }
-
-    Serial.println("Displays initialized");
 }
 
-void selectDisplay(uint8_t display) {
-    // Deselect all displays
-    digitalWrite(TFT_CS1, HIGH);
-    digitalWrite(TFT_CS2, HIGH);
-    digitalWrite(TFT_CS3, HIGH);
-    digitalWrite(TFT_CS4, HIGH);
+void initializeDisplays() {
+    Serial.println("\n=== DISPLAY INITIALIZATION ===");
 
-    // Select the target display
-    switch(display) {
-        case 0: digitalWrite(TFT_CS1, LOW); break;
-        case 1: digitalWrite(TFT_CS2, LOW); break;
-        case 2: digitalWrite(TFT_CS3, LOW); break;
-        case 3: digitalWrite(TFT_CS4, LOW); break;
-    }
+    // Setup backlight PWM (ESP32-Arduino v3.x API)
+    Serial.println("Setting up backlight...");
+    ledcAttach(TFT_BL, 2000, 8);  // Pin, 2kHz, 8-bit
+    ledcWrite(TFT_BL, 255);  // Full brightness
+    Serial.println("Backlight ON");
+
+    // Initialize the N085 screen driver (sets up CS pins)
+    Serial.println("Initializing N085 screen driver...");
+    N085_Screen_Set(N085_Initialize);
+
+    // CRITICAL: Select ALL screens before initializing
+    // This is how LILYGO does it - init once with all screens active
+    Serial.println("Selecting all screens for initialization...");
+    N085_Screen_Set(N085_Screen_ALL);
+
+    // Initialize TFT_eSPI library ONCE for all displays
+    Serial.println("Initializing TFT_eSPI (all displays at once)...");
+    tft.begin();
+
+    // Set rotation for GC9A01 driver (fixes upside-down display)
+    Serial.println("Setting rotation...");
+    tft.setRotation(2);
+
+    // Clear ALL displays at once
+    Serial.println("Clearing all displays...");
+    tft.fillScreen(TFT_BLACK);
+
+    // Skip individual display test - causes overlapping text
+    // Displays are already cleared and ready to use
+    Serial.println("\nDisplays cleared and ready");
+
+    // Keep display 0 selected
+    N085_Screen_Set(N085_Screen_1);
+
+    Serial.println("=== INITIALIZATION COMPLETE ===\n");
 }
 
 void setupWiFi() {
-    if (preferences.getString("wifi_ssid", "").length() == 0) {
+    String ssid = preferences.getString("wifi_ssid", "");
+    Serial.printf("Checking WiFi credentials... SSID: '%s'\n", ssid.c_str());
+
+    if (ssid.length() == 0) {
         Serial.println("No WiFi credentials, entering config mode");
         state.wifiConfigMode = true;
         enterConfigMode();
         return;
     }
 
+    Serial.println("WiFi credentials found, attempting connection");
     WiFi.mode(WIFI_STA);
     WiFi.begin(
-        preferences.getString("wifi_ssid", "").c_str(),
+        ssid.c_str(),
         preferences.getString("wifi_pass", "").c_str()
     );
 
+    // Show connecting status on displays
+    N085_Screen_Set(N085_Screen_1);
+    tft.fillScreen(TFT_BLACK);
+    tft.setTextSize(2);
+    tft.setTextColor(TFT_CYAN);
+    tft.setCursor(15, 50);
+    tft.print("WiFi");
+
+    N085_Screen_Set(N085_Screen_2);
+    tft.fillScreen(TFT_BLACK);
+    tft.setTextSize(2);
+    tft.setTextColor(TFT_YELLOW);
+    tft.setCursor(5, 50);
+    tft.print("Connect");
+
+    N085_Screen_Set(N085_Screen_3);
+    tft.fillScreen(TFT_BLACK);
+    tft.setTextSize(2);
+    tft.setTextColor(TFT_WHITE);
+    tft.setCursor(25, 50);
+    tft.print("ing");
+
+    N085_Screen_Set(N085_Screen_4);
+    tft.fillScreen(TFT_BLACK);
+    tft.setTextSize(2);
+    tft.setTextColor(TFT_GREEN);
+    tft.setCursor(30, 50);
+    tft.print("...");
+
     Serial.print("Connecting to WiFi");
     int attempts = 0;
+    uint8_t brightness = 0;
+    int8_t direction = 1;
+
     while (WiFi.status() != WL_CONNECTED && attempts < 30) {
         delay(500);
         Serial.print(".");
         attempts++;
 
         // Pulse blue LED while connecting
-        static uint8_t brightness = 0;
-        static int8_t direction = 1;
         brightness += direction * 5;
         if (brightness >= 255 || brightness <= 0) direction = -direction;
         fill_solid(leds, NUM_LEDS, CRGB(0, 0, brightness));
         FastLED.show();
+
+        // Feed watchdog to prevent resets during long WiFi connection
+        yield();
     }
 
     if (WiFi.status() == WL_CONNECTED) {
@@ -354,18 +450,61 @@ void setupWiFi() {
         Serial.print("IP: ");
         Serial.println(WiFi.localIP());
 
+        // Start mDNS
+        if (MDNS.begin("tkeyboard")) {
+            Serial.println("mDNS responder started: tkeyboard.local");
+        } else {
+            Serial.println("Error setting up mDNS responder!");
+        }
+
         // Green LEDs for success
         fill_solid(leds, NUM_LEDS, CRGB::Green);
         FastLED.show();
+
+        // Show waiting status on displays
+        String host = preferences.getString("bridge_host", "tkeyboard-bridge.local");
+        int port = preferences.getInt("bridge_port", 8080);
+
+        // Clear all displays first
+        for (int i = 0; i < 4; i++) {
+            selectDisplay(i);
+            tft.fillScreen(TFT_BLACK);
+        }
+
+        // Simple status display on each key
+        N085_Screen_Set(N085_Screen_1);
+        tft.setTextSize(2);
+        tft.setTextColor(TFT_YELLOW);
+        tft.setCursor(15, 50);
+        tft.print("Ready");
+
+        N085_Screen_Set(N085_Screen_2);
+        tft.setTextSize(2);
+        tft.setTextColor(TFT_CYAN);
+        tft.setCursor(25, 50);
+        tft.print("Wait");
+
+        N085_Screen_Set(N085_Screen_3);
+        tft.setTextSize(2);
+        tft.setTextColor(TFT_WHITE);
+        tft.setCursor(25, 50);
+        tft.print("ing");
+
+        N085_Screen_Set(N085_Screen_4);
+        tft.setTextSize(2);
+        tft.setTextColor(TFT_GREEN);
+        tft.setCursor(30, 50);
+        tft.print("...");
+
+        Serial.printf("Server: %s:%d\n", host.c_str(), port);
     } else {
-        Serial.println("\nWiFi connection failed!");
-        state.wifiConfigMode = true;
-        enterConfigMode();
+        Serial.println("\nInitial WiFi connection failed, will retry with exponential backoff");
+        // Don't enter config mode automatically - loop() will handle retries
     }
 }
 
 void setupWebSocket() {
-    String host = preferences.getString("bridge_host", "");
+    String host = preferences.getString("bridge_host", "tkeyboard-bridge.local");
     int port = preferences.getInt("bridge_port", 8080);
 
     if (host.length() == 0) {
@@ -375,6 +514,22 @@ void setupWebSocket() {
 
     Serial.printf("Connecting to WebSocket: %s:%d\n", host.c_str(), port);
 
+    // Try to resolve hostname first if it's a .local address
+    if (host.endsWith(".local")) {
+        Serial.printf("Resolving mDNS hostname: %s\n", host.c_str());
+        IPAddress resolvedIP = MDNS.queryHost(host.substring(0, host.length() - 6));  // Remove .local
+
+        if (resolvedIP == IPAddress(0, 0, 0, 0)) {
+            Serial.println("ERROR: mDNS resolution failed!");
+            Serial.println("  - Check that bridge server is running");
+            Serial.println("  - Verify both devices are on same network");
+            Serial.println("  - Try configuring an IP address instead");
+            return;
+        }
+
+        Serial.printf("Resolved %s to %s\n", host.c_str(), resolvedIP.toString().c_str());
+    }
+
     webSocket.begin(host, port, "/ws");
     webSocket.onEvent(handleWebSocketEvent);
     webSocket.setReconnectInterval(5000);
@@ -383,15 +538,16 @@ void setupWebSocket() {
 
 void handleWebSocketEvent(WStype_t type, uint8_t* payload, size_t length) {
     switch(type) {
-        case WStype_DISCONNECTED:
+        case WStype_DISCONNECTED: {
             Serial.println("WebSocket disconnected");
             state.wsConnected = false;
             // Red LEDs for disconnect
             fill_solid(leds, NUM_LEDS, CRGB::Red);
             FastLED.show();
             break;
+        }
 
-        case WStype_CONNECTED:
+        case WStype_CONNECTED: {
             Serial.println("WebSocket connected");
             state.wsConnected = true;
             // Green LEDs for connected
@@ -408,6 +564,7 @@ void handleWebSocketEvent(WStype_t type, uint8_t* payload, size_t length) {
             serializeJson(doc, json);
             webSocket.sendTXT(json);
             break;
+        }
 
         case WStype_TEXT: {
             Serial.printf("Received: %s\n", payload);
@@ -423,16 +580,28 @@ void handleWebSocketEvent(WStype_t type, uint8_t* payload, size_t length) {
             break;
         }
 
-        case WStype_PING:
+        case WStype_PING: {
             Serial.println("Ping received");
             break;
+        }
 
-        case WStype_PONG:
+        case WStype_PONG: {
             Serial.println("Pong received");
             break;
+        }
 
-        default:
+        case WStype_ERROR: {
+            Serial.printf("WebSocket ERROR! Error code: %u\n", type);
+            if (length > 0 && payload != nullptr) {
+                Serial.printf("Error payload: %s\n", payload);
+            }
             break;
+        }
+
+        default: {
+            Serial.printf("Unhandled WebSocket event type: %u\n", type);
+            break;
+        }
     }
 }
 
@@ -501,7 +670,7 @@ void handleKeyPress(int key) {
 
     // Handle special states
     if (claudeState == RATE_LIMITED) {
-        if (key == 2) {  // Key 2 is Continue during rate limit
+        if (key == 4) {  // Key 4 is Continue during rate limit
             sendKeyPress(key);
             // Try to resume normal state
             claudeState = IDLE;
@@ -511,12 +680,12 @@ void handleKeyPress(int key) {
     }
 
     if (claudeState == ERROR) {
-        if (key == 2) {  // Key 2 is Continue during error
+        if (key == 3) {  // Key 3 is Continue during error
             sendKeyPress(key);
             claudeState = IDLE;
             optionsUpdated = true;
             return;
-        } else if (key == 3) {  // Key 3 is Retry during error
+        } else if (key == 4) {  // Key 4 is Retry during error
             sendKeyPress(key);
             return;
         }
@@ -562,32 +731,35 @@ void sendKeyPress(int key) {
 
 void updateDisplays() {
     for (int i = 0; i < 4; i++) {
-        selectDisplay(i);
-
         if (claudeState == RATE_LIMITED) {
-            // Special display for rate limit
+            // Spread rate limit info across displays for readability
             if (i == 0) {
-                // Show rate limit status on first display
-                drawRateLimitStatus();
+                // Display 1: "RATE" text
+                drawLargeText(0, "RATE", 0xFFFF00);  // Yellow
             } else if (i == 1) {
-                // Show Continue button on second display
-                drawTextOption(1, "Continue", 0x00FF00);  // Green
-            } else {
-                displays[i]->fillScreen(BLACK);
+                // Display 2: "LIMIT" text
+                drawLargeText(1, "LIMIT", 0xFFFF00);  // Yellow
+            } else if (i == 2) {
+                // Display 3: Big timer
+                drawRateLimitTimer();
+            } else if (i == 3) {
+                // Display 4: Continue button
+                drawTextOption(3, "Continue", 0x00FF00);  // Green
             }
         } else if (claudeState == ERROR) {
-            // Special display for errors
+            // Spread error info across displays
             if (i == 0) {
-                // Show error on first display
-                drawErrorStatus();
+                // Display 1: "ERROR" text large
+                drawLargeText(0, "ERROR", 0xFF0000);  // Red
             } else if (i == 1) {
-                // Show Continue button on second display
-                drawTextOption(1, "Continue", 0x00FF00);  // Green
+                // Display 2: Big pulsing !
+                drawErrorIcon();
             } else if (i == 2) {
-                // Show Retry button on third display
-                drawTextOption(2, "Retry", 0xFFA500);  // Orange
-            } else {
-                displays[i]->fillScreen(BLACK);
+                // Display 3: Continue button
+                drawTextOption(2, "Continue", 0x00FF00);  // Green
+            } else if (i == 3) {
+                // Display 4: Retry button
+                drawTextOption(3, "Retry", 0xFFA500);  // Orange
             }
         } else if (currentOptions[i].hasImage) {
             // Try to load and display image
@@ -602,7 +774,7 @@ void updateDisplays() {
     }
 }
 
-bool loadImageFromSPIFFS(const String& path, uint8_t display) {
+bool loadImageFromSPIFFS(const String& path, uint8_t displayIndex) {
     String fullPath = IMAGE_CACHE_PATH + path;
 
     if (!SPIFFS.exists(fullPath)) {
@@ -640,41 +812,57 @@ bool loadImageFromSPIFFS(const String& path, uint8_t display) {
     }
 
     // Draw image to display
-    selectDisplay(display);
-    displays[display]->draw16bitRGBBitmap(0, 0, (uint16_t*)buffer, SCREEN_WIDTH, SCREEN_HEIGHT);
+    selectDisplay(displayIndex);
+    tft.pushImage(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, (uint16_t*)buffer);
 
     free(buffer);
     return true;
 }
 
-void drawTextOption(uint8_t display, const String& text, uint32_t color) {
-    selectDisplay(display);
-    displays[display]->fillScreen(BLACK);
+void drawTextOption(uint8_t displayIndex, const String& text, uint32_t color) {
+    selectDisplay(displayIndex);
+    tft.fillScreen(TFT_BLACK);
 
     // Set text color from RGB value
     uint16_t color565 = ((color & 0xF80000) >> 8) |
                         ((color & 0x00FC00) >> 5) |
                         ((color & 0x0000F8) >> 3);
-    displays[display]->setTextColor(color565);
+    tft.setTextColor(color565);
 
     // Center text
     int16_t x = (SCREEN_WIDTH - text.length() * 12) / 2;
     int16_t y = (SCREEN_HEIGHT - 16) / 2;
 
-    displays[display]->setCursor(x, y);
-    displays[display]->setTextSize(2);
-    displays[display]->print(text);
+    tft.setCursor(x, y);
+    tft.setTextSize(2);
+    tft.print(text);
 }
 
-void drawRateLimitStatus() {
-    selectDisplay(0);
-    displays[0]->fillScreen(BLACK);
-    displays[0]->setTextColor(RED);
+void drawLargeText(uint8_t displayIndex, const String& text, uint32_t color) {
+    selectDisplay(displayIndex);
+    tft.fillScreen(TFT_BLACK);
 
-    // Title
-    displays[0]->setTextSize(2);
-    displays[0]->setCursor(10, 20);
-    displays[0]->print("Rate Limit");
+    // Convert RGB888 to RGB565
+    uint16_t color565 = ((color & 0xF80000) >> 8) |
+                        ((color & 0x00FC00) >> 5) |
+                        ((color & 0x0000F8) >> 3);
+    tft.setTextColor(color565);
+
+    // Use large text size (4x) and center
+    tft.setTextSize(4);
+
+    // Calculate center position (4x size = 24 pixels wide per char, 32 pixels high)
+    int16_t charWidth = text.length() * 24;
+    int16_t x = (SCREEN_WIDTH - charWidth) / 2;
+    int16_t y = (SCREEN_HEIGHT - 32) / 2;
+
+    tft.setCursor(x, y);
+    tft.print(text);
+}
+
+void drawRateLimitTimer() {
+    N085_Screen_Set(N085_Screen_3);
+    tft.fillScreen(TFT_BLACK);
 
     int mins, secs;
     String timeStr;
@@ -684,73 +872,84 @@ void drawRateLimitStatus() {
         mins = rateLimitCountdown / 60;
         secs = rateLimitCountdown % 60;
 
-        displays[0]->setTextColor(YELLOW);
-        displays[0]->setTextSize(3);
-        timeStr = String(mins) + ":" + (secs < 10 ? "0" : "") + String(secs);
-        int16_t x = (SCREEN_WIDTH - timeStr.length() * 18) / 2;
-        displays[0]->setCursor(x, 55);
-        displays[0]->print(timeStr);
-
-        // Show "wait..." text
-        displays[0]->setTextColor(WHITE);
-        displays[0]->setTextSize(1);
-        displays[0]->setCursor(35, 95);
-        displays[0]->print("Please wait");
+        tft.setTextColor(TFT_YELLOW);
     } else {
         // Elapsed time mode - duration unknown
         unsigned long elapsed = (millis() - rateLimitStartTime) / 1000;
         mins = elapsed / 60;
         secs = elapsed % 60;
 
-        displays[0]->setTextColor(YELLOW);
-        displays[0]->setTextSize(3);
-        timeStr = String(mins) + ":" + (secs < 10 ? "0" : "") + String(secs);
-        int16_t x = (SCREEN_WIDTH - timeStr.length() * 18) / 2;
-        displays[0]->setCursor(x, 55);
-        displays[0]->print(timeStr);
+        tft.setTextColor(TFT_ORANGE);
+    }
 
-        // Show "waiting..." with animated dots
-        displays[0]->setTextColor(WHITE);
-        displays[0]->setTextSize(1);
-        displays[0]->setCursor(25, 95);
-        displays[0]->print("Waiting");
+    // Format time as MM:SS
+    timeStr = String(mins) + ":" + (secs < 10 ? "0" : "") + String(secs);
 
-        // Animated dots
+    // Display in large text (size 4)
+    tft.setTextSize(4);
+
+    // Center the time
+    int16_t charWidth = timeStr.length() * 24;
+    int16_t x = (SCREEN_WIDTH - charWidth) / 2;
+    int16_t y = (SCREEN_HEIGHT - 32) / 2;
+
+    tft.setCursor(x, y);
+    tft.print(timeStr);
+
+    // Add small label below
+    tft.setTextSize(1);
+    tft.setTextColor(TFT_WHITE);
+    if (rateLimitCountdown > 0) {
+        tft.setCursor(30, 100);
+        tft.print("remaining");
+    } else {
+        // Animated dots for elapsed time
+        tft.setCursor(35, 100);
+        tft.print("elapsed");
+
         static int dotCount = 0;
-        dotCount = (dotCount + 1) % 4;
+        static unsigned long lastDotUpdate = 0;
+        if (millis() - lastDotUpdate > 500) {
+            dotCount = (dotCount + 1) % 4;
+            lastDotUpdate = millis();
+        }
+
+        tft.setCursor(75, 100);
         for (int i = 0; i < dotCount; i++) {
-            displays[0]->print(".");
+            tft.print(".");
         }
     }
 }
 
-void drawErrorStatus() {
-    selectDisplay(0);
-    displays[0]->fillScreen(BLACK);
-    displays[0]->setTextColor(RED);
+void drawErrorIcon() {
+    N085_Screen_Set(N085_Screen_2);
+    tft.fillScreen(TFT_BLACK);
 
-    // Title
-    displays[0]->setTextSize(2);
-    displays[0]->setCursor(20, 30);
-    displays[0]->print("Error");
-
-    // Show pulsing error icon (!)
+    // Pulsing red exclamation mark
     static uint8_t brightness = 128;
     static int8_t direction = 4;
+
     brightness += direction;
-    if (brightness >= 255 || brightness <= 128) direction = -direction;
+    if (brightness >= 255 || brightness <= 128) {
+        direction = -direction;
+    }
 
-    displays[0]->setTextColor(displays[0]->color565(brightness, 0, 0));
-    displays[0]->setTextSize(5);
-    displays[0]->setCursor(50, 60);
-    displays[0]->print("!");
+    // Create pulsing red color
+    uint16_t pulseColor = tft.color565(brightness, 0, 0);
+    tft.setTextColor(pulseColor);
 
-    // Show help text
-    displays[0]->setTextColor(WHITE);
-    displays[0]->setTextSize(1);
-    displays[0]->setCursor(15, 110);
-    displays[0]->print("Check console");
+    // Draw large exclamation mark centered
+    tft.setTextSize(8);
+    tft.setCursor(45, 30);  // Manually center the "!" character
+    tft.print("!");
+
+    // Add small "Error" text at bottom
+    tft.setTextColor(TFT_WHITE);
+    tft.setTextSize(1);
+    tft.setCursor(45, 110);
+    tft.print("Error");
 }
+
 
 void setLEDStatus() {
     static uint8_t pulseValue = 0;
@@ -803,9 +1002,15 @@ void setLEDStatus() {
 }
 
 void setupSPIFFS() {
-    if (!SPIFFS.begin(true)) {
-        Serial.println("SPIFFS mount failed!");
-        return;
+    // Try to mount SPIFFS, format if mount fails
+    if (!SPIFFS.begin(false)) {
+        Serial.println("SPIFFS mount failed, formatting...");
+        if (SPIFFS.begin(true)) {  // true = format if mount fails
+            Serial.println("SPIFFS formatted and mounted successfully");
+        } else {
+            Serial.println("SPIFFS format failed - image caching disabled");
+            return;
+        }
     }
 
     Serial.printf("SPIFFS: %d bytes used of %d\n",
@@ -822,7 +1027,7 @@ void loadPreferences() {
     preferences.begin("tkeyboard", false);
 
     state.backlightIntensity = preferences.getUChar("backlight", 128);
-    state.bridgeHost = preferences.getString("bridge_host", "");
+    state.bridgeHost = preferences.getString("bridge_host", "tkeyboard-bridge.local");
     state.bridgePort = preferences.getInt("bridge_port", 8080);
 
     Serial.println("Preferences loaded");
@@ -840,52 +1045,88 @@ void enterConfigMode() {
     Serial.println("Entering WiFi configuration mode");
 
     // Create access point
+    Serial.println("Setting WiFi mode to AP...");
     WiFi.mode(WIFI_AP);
+
+    Serial.printf("Starting AP: SSID='%s' Pass='%s'\n", AP_SSID, AP_PASSWORD);
     WiFi.softAP(AP_SSID, AP_PASSWORD);
 
     Serial.print("AP IP: ");
     Serial.println(WiFi.softAPIP());
 
     // Setup DNS server to redirect all requests
+    Serial.println("Starting DNS server...");
     dnsServer.start(53, "*", WiFi.softAPIP());
 
     // Setup web server
+    Serial.println("Starting config web server...");
     setupConfigServer();
 
     // Display config mode on screens
-    for (int i = 0; i < 4; i++) {
-        selectDisplay(i);
-        displays[i]->fillScreen(BLACK);
-        displays[i]->setTextColor(CYAN);
-        displays[i]->setTextSize(1);
+    Serial.println("Updating displays for config mode...");
 
-        if (i == 0) {
-            displays[i]->setCursor(10, 30);
-            displays[i]->print("WiFi Setup");
-            displays[i]->setCursor(10, 50);
-            displays[i]->print("Connect to:");
-            displays[i]->setCursor(10, 70);
-            displays[i]->print(AP_SSID);
-        } else if (i == 1) {
-            displays[i]->setCursor(10, 30);
-            displays[i]->print("Password:");
-            displays[i]->setCursor(10, 50);
-            displays[i]->print(AP_PASSWORD);
-        } else if (i == 2) {
-            displays[i]->setCursor(10, 30);
-            displays[i]->print("Then visit:");
-            displays[i]->setCursor(10, 50);
-            displays[i]->print("192.168.4.1");
-        }
-    }
+    // Key 1: Config mode indicator
+    N085_Screen_Set(N085_Screen_1);
+    tft.fillScreen(TFT_BLACK);
+    tft.setTextColor(TFT_YELLOW);
+    tft.setTextSize(2);
+    tft.setCursor(10, 30);
+    tft.print("CONFIG");
+    tft.setCursor(10, 55);
+    tft.print("MODE");
+    tft.setTextSize(1);
+    tft.setTextColor(TFT_CYAN);
+    tft.setCursor(10, 90);
+    tft.print("AP Active");
+
+    // Key 2: SSID
+    N085_Screen_Set(N085_Screen_2);
+    tft.fillScreen(TFT_BLACK);
+    tft.setTextColor(TFT_CYAN);
+    tft.setTextSize(1);
+    tft.setCursor(10, 30);
+    tft.print("WiFi SSID:");
+    tft.setTextColor(TFT_WHITE);
+    tft.setTextSize(2);
+    tft.setCursor(5, 55);
+    tft.print(AP_SSID);
+
+    // Key 3: Password
+    N085_Screen_Set(N085_Screen_3);
+    tft.fillScreen(TFT_BLACK);
+    tft.setTextColor(TFT_CYAN);
+    tft.setTextSize(1);
+    tft.setCursor(10, 30);
+    tft.print("Password:");
+    tft.setTextColor(TFT_WHITE);
+    tft.setTextSize(2);
+    tft.setCursor(15, 55);
+    tft.print(AP_PASSWORD);
+
+    // Key 4: URL to visit
+    N085_Screen_Set(N085_Screen_4);
+    tft.fillScreen(TFT_BLACK);
+    tft.setTextColor(TFT_CYAN);
+    tft.setTextSize(1);
+    tft.setCursor(10, 30);
+    tft.print("Then visit:");
+    tft.setTextColor(TFT_GREEN);
+    tft.setTextSize(2);
+    tft.setCursor(5, 55);
+    tft.print("192.168");
+    tft.setCursor(15, 75);
+    tft.print(".4.1");
 
     state.wifiConfigMode = true;
+    Serial.println("Config mode setup complete!");
 }
 
 void setupConfigServer() {
+    Serial.println("Setting up config server routes...");
+
     // Serve configuration page
-    configServer.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
-        String html = R"(
+    configServer.on("/", []() {
+        const char* html = R"html(
 <!DOCTYPE html>
 <html>
 <head>
@@ -895,84 +1136,147 @@ void setupConfigServer() {
         body { font-family: Arial; margin: 20px; background: #1a1a1a; color: #fff; }
         .container { max-width: 400px; margin: 0 auto; }
         h1 { color: #4CAF50; text-align: center; }
-        input, select { width: 100%; padding: 10px; margin: 10px 0; box-sizing: border-box;
-                        background: #2a2a2a; border: 1px solid #4CAF50; color: #fff; }
+        input { width: 100%; padding: 10px; margin: 10px 0; box-sizing: border-box;
+                background: #2a2a2a; border: 1px solid #4CAF50; color: #fff; }
         button { background: #4CAF50; color: white; padding: 14px 20px; margin: 8px 0;
                  border: none; cursor: pointer; width: 100%; }
-        button:hover { background: #45a049; }
         .section { background: #2a2a2a; padding: 20px; margin: 20px 0; border-radius: 5px; }
         label { display: block; margin-top: 10px; color: #aaa; }
-        .range-value { text-align: center; color: #4CAF50; }
     </style>
 </head>
 <body>
     <div class='container'>
         <h1>T-Keyboard Setup</h1>
-
         <div class='section'>
             <h2>WiFi Configuration</h2>
             <form action='/save' method='POST'>
                 <label>Network Name (SSID):</label>
                 <input type='text' name='ssid' required>
-
                 <label>Password:</label>
                 <input type='password' name='pass' required>
-
                 <label>Bridge Server Host:</label>
-                <input type='text' name='host' placeholder='192.168.1.100' required>
-
+                <input type='text' name='host' value='tkeyboard-bridge.local' required>
                 <label>Bridge Server Port:</label>
                 <input type='number' name='port' value='8080' required>
-
-                <label>Backlight Intensity:</label>
-                <input type='range' name='backlight' min='10' max='255' value='128'
-                       oninput='this.nextElementSibling.value = Math.round(this.value/2.55) + "%"'>
-                <div class='range-value'>50%</div>
-
                 <button type='submit'>Save & Restart</button>
             </form>
-        </div>
-
-        <div class='section'>
-            <h3>Status</h3>
-            <p>Device: T-Keyboard-S3</p>
-            <p>Version: 1.0</p>
-            <p>Free Heap: )" + String(ESP.getFreeHeap()) + R"( bytes</p>
-            <p>PSRAM: )" + String(ESP.getPsramSize()) + R"( bytes</p>
         </div>
     </div>
 </body>
 </html>
-)";
-        request->send(200, "text/html", html);
+)html";
+        configServer.send(200, "text/html", html);
     });
 
     // Handle form submission
-    configServer.on("/save", HTTP_POST, [](AsyncWebServerRequest *request) {
-        if (request->hasParam("ssid", true) && request->hasParam("pass", true)) {
-            String ssid = request->getParam("ssid", true)->value();
-            String pass = request->getParam("pass", true)->value();
-            String host = request->getParam("host", true)->value();
-            int port = request->getParam("port", true)->value().toInt();
-            int backlight = request->getParam("backlight", true)->value().toInt();
+    configServer.on("/save", []() {
+        if (configServer.hasArg("ssid") && configServer.hasArg("pass")) {
+            String ssid = configServer.arg("ssid");
+            String pass = configServer.arg("pass");
+            String host = configServer.arg("host");
+            int port = configServer.arg("port").toInt();
 
             // Save to preferences
             preferences.putString("wifi_ssid", ssid);
             preferences.putString("wifi_pass", pass);
             preferences.putString("bridge_host", host);
             preferences.putInt("bridge_port", port);
-            preferences.putUChar("backlight", backlight);
 
-            request->send(200, "text/html",
-                "<html><body><h1>Settings Saved!</h1><p>Device will restart in 3 seconds...</p></body></html>");
+            configServer.send(200, "text/html", "<html><body><h1>Settings Saved!</h1><p>Restarting...</p></body></html>");
 
-            delay(3000);
+            delay(2000);
             ESP.restart();
         } else {
-            request->send(400, "text/html", "Missing parameters");
+            configServer.send(400, "text/html", "Missing parameters");
         }
     });
 
+    Serial.println("Starting HTTP server...");
     configServer.begin();
-    Serial.println("Config server started");
+    Serial.println("Config server started successfully!");
+}
+
+void handleSerialCommands() {
+    if (!Serial.available()) return;
+
+    String command = Serial.readStringUntil('\n');
+    command.trim();
+
+    if (command.length() == 0) return;
+
+    Serial.printf("Received command: %s\n", command.c_str());
+
+    // WIFI:SSID:PASSWORD
+    if (command.startsWith("WIFI:")) {
+        int firstColon = command.indexOf(':', 5);
+        if (firstColon > 5) {
+            String ssid = command.substring(5, firstColon);
+            String pass = command.substring(firstColon + 1);
+
+            preferences.putString("wifi_ssid", ssid);
+            preferences.putString("wifi_pass", pass);
+
+            Serial.printf("WiFi configured: SSID='%s'\n", ssid.c_str());
+            Serial.println("Restart device to apply changes");
+        } else {
+            Serial.println("Error: WIFI command format: WIFI:SSID:PASSWORD");
+        }
+    }
+    // HOST:hostname
+    else if (command.startsWith("HOST:")) {
+        String host = command.substring(5);
+        preferences.putString("bridge_host", host);
+        state.bridgeHost = host;
+
+        Serial.printf("Bridge host set to: %s\n", host.c_str());
+        Serial.println("Restart device to apply changes");
+    }
+    // PORT:8080
+    else if (command.startsWith("PORT:")) {
+        int port = command.substring(5).toInt();
+        if (port > 0 && port < 65536) {
+            preferences.putInt("bridge_port", port);
+            state.bridgePort = port;
+
+            Serial.printf("Bridge port set to: %d\n", port);
+            Serial.println("Restart device to apply changes");
+        } else {
+            Serial.println("Error: Invalid port number");
+        }
+    }
+    // CONFIG
+    else if (command == "CONFIG") {
+        Serial.println("Entering AP config mode...");
+        state.wifiConfigMode = true;
+        ESP.restart();
+    }
+    // STATUS
+    else if (command == "STATUS") {
+        Serial.println("\n=== T-Keyboard Status ===");
+        Serial.printf("WiFi SSID: %s\n", preferences.getString("wifi_ssid", "(not set)").c_str());
+        Serial.printf("WiFi Status: %s\n", WiFi.isConnected() ? "Connected" : "Disconnected");
+        if (WiFi.isConnected()) {
+            Serial.printf("IP Address: %s\n", WiFi.localIP().toString().c_str());
+        }
+        Serial.printf("Bridge Host: %s\n", preferences.getString("bridge_host", "(not set)").c_str());
+        Serial.printf("Bridge Port: %d\n", preferences.getInt("bridge_port", 8080));
+        Serial.printf("WebSocket: %s\n", state.wsConnected ? "Connected" : "Disconnected");
+        Serial.printf("Config Mode: %s\n", state.wifiConfigMode ? "Yes" : "No");
+        Serial.println("========================\n");
+    }
+    // RESTART
+    else if (command == "RESTART") {
+        Serial.println("Restarting...");
+        delay(1000);
+        ESP.restart();
+    }
+    else {
+        Serial.println("Unknown command. Available commands:");
+        Serial.println("  WIFI:SSID:PASSWORD - Set WiFi credentials");
+        Serial.println("  HOST:hostname - Set bridge server host");
+        Serial.println("  PORT:8080 - Set bridge server port");
+        Serial.println("  CONFIG - Enter AP config mode");
+        Serial.println("  STATUS - Show current settings");
+        Serial.println("  RESTART - Restart device");
+    }
 }

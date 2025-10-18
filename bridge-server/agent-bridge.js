@@ -8,6 +8,7 @@
 const WebSocket = require('ws');
 const http = require('http');
 const fs = require('fs');
+const Bonjour = require('bonjour-service');
 
 // Configuration
 const config = {
@@ -15,6 +16,9 @@ const config = {
     httpPort: 8081,
     debug: process.env.DEBUG === 'true'
 };
+
+// Initialize Bonjour for mDNS
+const bonjour = new Bonjour.Bonjour();
 
 // State
 let tkeyboardClient = null;
@@ -239,11 +243,27 @@ server.listen(config.httpPort, () => {
 
 Ready for connections...
 `);
+
+    // Publish mDNS service
+    bonjour.publish({
+        name: 'tkeyboard-bridge',
+        type: 'http',
+        port: config.httpPort,
+        host: 'tkeyboard-bridge.local',
+        txt: {
+            ws_port: config.wsPort.toString(),
+            api_port: config.httpPort.toString()
+        }
+    });
+
+    console.log('mDNS service published: tkeyboard-bridge.local');
 });
 
 // Graceful shutdown
 process.on('SIGINT', () => {
     console.log('\nShutting down...');
+    bonjour.unpublishAll();
+    bonjour.destroy();
     wss.close();
     server.close();
     process.exit(0);

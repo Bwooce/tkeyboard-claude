@@ -50,6 +50,11 @@ T-Keyboard Press → Bridge Server Queue → Claude Agent (polls) → Immediate 
 - RGB565 (2 bytes per pixel)
 - Big-endian byte order
 
+**Display Guidelines:**
+- Minimum text size: 2 (setTextSize(2))
+- Size 1 text is too small and nearly unreadable
+- Use size 2 for labels, size 3-4 for primary content
+
 ## Agent Capabilities
 
 The Claude agent can:
@@ -58,6 +63,19 @@ The Claude agent can:
 - Generate custom images dynamically
 - Detect conversation context
 - Update button options in real-time
+
+## Serial Configuration
+
+Configure WiFi and bridge settings via serial (115200 baud):
+
+```
+WIFI:MySSID:MyPassword         - Set WiFi credentials
+HOST:192.168.1.100             - Set bridge server host
+PORT:8080                      - Set bridge server port
+CONFIG                         - Enter AP config mode
+STATUS                         - Show current settings
+RESTART                        - Restart device
+```
 
 ## Quick Test
 

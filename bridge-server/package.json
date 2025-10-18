@@ -12,7 +12,8 @@
     "test": "curl -s http://localhost:8081/status | jq ."
   },
   "dependencies": {
-    "ws": "^8.14.0"
+    "ws": "^8.14.0",
+    "bonjour-service": "^1.2.1"
   },
   "devDependencies": {
     "canvas": "^2.11.2",

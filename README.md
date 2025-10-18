@@ -225,6 +225,18 @@ Monitor my T-Keyboard at http://localhost:8081/hook/get-inputs
 Process inputs immediately and update display with context options.
 ```
 
+### LED Status Indicators
+
+The 4 RGB LEDs show system status:
+
+- 🟢 **Green (solid)**: Connected and ready
+- 🟡 **Yellow (pulsing)**: Claude is thinking/processing
+- 🔴 **Red (solid)**: Error state or config mode
+- 🔴 **Red (slow pulse)**: Rate limited - waiting to retry
+- 🔴 **Red (fast blink)**: WebSocket not connected - check bridge server
+- 🔵 **Blue (breathing)**: WiFi config mode active or waiting for input
+- 🔵 **Blue (pulsing)**: Connecting to WiFi
+
 ### Configuration
 
 - **Backlight**: Adjustable via web config (default 50%)
