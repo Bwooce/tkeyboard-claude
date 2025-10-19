@@ -21,6 +21,35 @@ I need you to set up my T-Keyboard with TTY injection. Please:
    - Update keyboard buttons based on conversation context
    - Send state updates when thinking/idle
 
+   ⚠️ CRITICAL - Agent Health Monitoring:
+   You MUST check on every polling cycle (every 2 seconds):
+
+   ```bash
+   # Get session info from bridge
+   RESPONSE=$(curl -s http://localhost:8081/status)
+
+   # Extract main session PID
+   CLAUDE_PID=$(echo "$RESPONSE" | jq -r '.claudePid')
+
+   # Check if main Claude session is still alive
+   if ! kill -0 "$CLAUDE_PID" 2>/dev/null; then
+       echo "Main Claude session (PID $CLAUDE_PID) died. Agent terminating."
+       exit 0
+   fi
+   ```
+
+   **Additional health checks:**
+   - Store the initial session ID when you start
+   - If session ID changes between polls → New session started, terminate agent
+   - If bridge returns error/timeout → Attempt to restart bridge server
+   - If TTY path doesn't exist → Main session probably died, terminate
+
+   **Agent behavior:**
+   - If main session dies → Agent terminates immediately
+   - If bridge dies → Agent restarts bridge (don't terminate)
+   - If session ID changes → Agent terminates (new session took over)
+   - You are the supervisor - keep the system running even if bridge crashes
+
 3. Maintain context-aware button options with images by preference:
    - Error context → 🐛 Debug, 🔄 Retry, ⏭️ Skip, ❓ Help
    - Code review → ▶️ Run, 🧪 Test, ♻️ Refactor, 📖 Explain
@@ -179,5 +208,51 @@ I need you to set up my T-Keyboard with TTY injection and dynamic images:
 
 Start the bridge server and begin monitoring with image generation.
 ```
+
+## Agent Self-Termination
+
+**CRITICAL:** To prevent orphaned agents, implement health monitoring in your polling loop:
+
+```bash
+# Store initial session info
+INITIAL_SESSION_ID=$(curl -s http://localhost:8081/status | jq -r '.sessionId')
+INITIAL_CLAUDE_PID=$(curl -s http://localhost:8081/status | jq -r '.claudePid')
+
+echo "Monitoring session: $INITIAL_SESSION_ID (PID $INITIAL_CLAUDE_PID)"
+
+# In your polling loop (every 2 seconds):
+while true; do
+    # Get current status
+    STATUS=$(curl -s http://localhost:8081/status)
+
+    if [ $? -ne 0 ] || [ -z "$STATUS" ]; then
+        echo "Bridge server not responding - attempting restart..."
+        cd tkeyboard-claude/bridge-server && node agent-bridge.js &
+        sleep 5
+        continue
+    fi
+
+    # Check session consistency
+    CURRENT_SESSION=$(echo "$STATUS" | jq -r '.sessionId')
+    CURRENT_PID=$(echo "$STATUS" | jq -r '.claudePid')
+
+    if [ "$CURRENT_SESSION" != "$INITIAL_SESSION_ID" ]; then
+        echo "Session changed from $INITIAL_SESSION_ID to $CURRENT_SESSION - terminating agent"
+        exit 0
+    fi
+
+    # Check if main Claude session still alive
+    if ! kill -0 "$CURRENT_PID" 2>/dev/null; then
+        echo "Main Claude session (PID $CURRENT_PID) died - terminating agent"
+        exit 0
+    fi
+
+    # Process inputs and update keyboard...
+
+    sleep 2
+done
+```
+
+This ensures the agent dies when the main session is gone, preventing runaway processes.
 
 See `DYNAMIC_IMAGES.md` for implementation details.
