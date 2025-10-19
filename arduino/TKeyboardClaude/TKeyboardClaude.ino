@@ -5,6 +5,7 @@
 
 #include <WiFi.h>
 #include <WebSocketsClient.h>
+#include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include <Preferences.h>
 #include <SPIFFS.h>
@@ -15,6 +16,8 @@
 #include <SPI.h>
 #include <TFT_eSPI.h>
 #include <T-Keyboard_S3_Drive.h>
+#include <vector>
+#include <esp_task_wdt.h>
 
 // Hardware Pin Definitions (from T-Keyboard-S3 specs)
 #define KEY1_PIN 10
@@ -50,6 +53,7 @@
 // SPIFFS Configuration
 #define IMAGE_CACHE_PATH "/images/"
 #define MAX_CACHED_IMAGES 50
+#define WATCHDOG_TIMEOUT_MS 5000  // 5 second watchdog timeout
 
 // Global Objects
 Preferences preferences;
@@ -76,10 +80,11 @@ struct SystemState {
 } state;
 
 struct KeyOption {
-    String text;
-    String imagePath;
-    uint32_t color;
-    bool hasImage;
+    String text;        // Display text (label shown on button)
+    String action;      // Action text (what gets sent when pressed) - if empty, uses text
+    String imagePath;   // Image filename (e.g., "stop.rgb")
+    uint32_t color;     // Button background color
+    bool hasImage;      // Whether an image should be displayed
 };
 
 KeyOption currentOptions[4];
@@ -91,6 +96,12 @@ void drawLargeText(uint8_t displayIndex, const String& text, uint32_t color);
 void drawRateLimitTimer();
 void drawErrorIcon();
 bool loadImageFromSPIFFS(const String& path, uint8_t display);
+bool downloadImageHTTP(const String& imagePath, const String& serverHost, uint16_t serverPort);
+void ensureSPIFFSSpace(size_t requiredBytes);
+void deleteRandomImage();
+void disableWatchdog();
+void enableWatchdog();
+void feedWatchdog();
 
 // ============================================================================
 // FINITE STATE MACHINE ARCHITECTURE
@@ -352,8 +363,10 @@ void setup() {
     setupHardware();
     loadPreferences();
 
-    Serial.println("Skipping SPIFFS setup for now...");
-    // setupSPIFFS();  // Disabled temporarily - partition issues
+    setupSPIFFS();
+
+    // Enable watchdog timer after SPIFFS is set up
+    enableWatchdog();
 
     Serial.println("Checking WiFi config mode flag...");
     if (state.wifiConfigMode) {
@@ -520,6 +533,7 @@ void loop() {
     handleSerialCommands();
 
     // Feed the watchdog
+    feedWatchdog();
     yield();
 }
 
@@ -818,10 +832,19 @@ void processClaudeMessage(JsonDocument& doc) {
 
         for (int i = 0; i < 4 && i < options.size(); i++) {
             currentOptions[i].text = options[i]["text"].as<String>();
+            currentOptions[i].action = options[i]["action"].as<String>();
             currentOptions[i].imagePath = options[i]["image"].as<String>();
             currentOptions[i].color = strtoul(options[i]["color"].as<String>().substring(1).c_str(), NULL, 16);
             currentOptions[i].hasImage = currentOptions[i].imagePath.length() > 0;
-            Serial.printf("[DEBUG]   Key %d: %s\n", i+1, currentOptions[i].text.c_str());
+
+            // If no action specified, use display text as action
+            if (currentOptions[i].action.length() == 0) {
+                currentOptions[i].action = currentOptions[i].text;
+            }
+
+            Serial.printf("[DEBUG]   Key %d: text='%s', action='%s', image='%s', hasImage=%d\n",
+                i+1, currentOptions[i].text.c_str(), currentOptions[i].action.c_str(),
+                currentOptions[i].imagePath.c_str(), currentOptions[i].hasImage);
         }
 
         optionsUpdated = true;
@@ -964,13 +987,14 @@ void sendKeyPress(int key) {
     doc["type"] = "key_press";
     doc["session_id"] = state.sessionId;
     doc["key"] = key;
-    doc["text"] = currentOptions[key - 1].text;
+    doc["text"] = currentOptions[key - 1].action;  // Send action text, not display text
 
     String json;
     serializeJson(doc, json);
     webSocket.sendTXT(json);
 
-    Serial.printf("Sent: %s\n", json.c_str());
+    Serial.printf("Sent key %d: action='%s' (display='%s')\n",
+        key, currentOptions[key - 1].action.c_str(), currentOptions[key - 1].text.c_str());
 }
 
 void updateDisplays() {
@@ -980,11 +1004,34 @@ void updateDisplays() {
 }
 
 bool loadImageFromSPIFFS(const String& path, uint8_t displayIndex) {
+    Serial.printf("[IMG] loadImageFromSPIFFS called: path='%s', display=%d\n", path.c_str(), displayIndex);
     String fullPath = IMAGE_CACHE_PATH + path;
 
+    // If image doesn't exist in SPIFFS, try to download it
     if (!SPIFFS.exists(fullPath)) {
-        Serial.printf("Image not found: %s\n", fullPath.c_str());
-        return false;
+        Serial.printf("[IMG] Image not cached: %s - attempting download\n", path.c_str());
+
+        // Get bridge server settings from Preferences
+        String bridgeHost = preferences.getString("bridge_host", "");
+        int bridgePort = preferences.getInt("bridge_port", 8080);
+
+        Serial.printf("[IMG] Bridge config: host='%s', port=%d\n", bridgeHost.c_str(), bridgePort);
+
+        if (bridgeHost.isEmpty()) {
+            Serial.println("[IMG] Bridge host not configured, cannot download image");
+            return false;
+        }
+
+        // Try to download the image
+        if (!downloadImageHTTP(path, bridgeHost, bridgePort)) {
+            Serial.printf("[IMG] Failed to download image: %s\n", path.c_str());
+            return false;
+        }
+
+        // Image should now be in SPIFFS, continue with loading
+        Serial.printf("[IMG] Image downloaded successfully: %s\n", path.c_str());
+    } else {
+        Serial.printf("[IMG] Image found in cache: %s\n", fullPath.c_str());
     }
 
     File file = SPIFFS.open(fullPath, FILE_READ);
@@ -1022,6 +1069,154 @@ bool loadImageFromSPIFFS(const String& path, uint8_t displayIndex) {
 
     free(buffer);
     return true;
+}
+
+// Delete a random .rgb image file from SPIFFS to free up space
+void deleteRandomImage() {
+    File root = SPIFFS.open(IMAGE_CACHE_PATH);
+    if (!root || !root.isDirectory()) {
+        Serial.println("Failed to open image cache directory");
+        return;
+    }
+
+    // Count and collect image files
+    std::vector<String> imageFiles;
+    File file = root.openNextFile();
+    while (file) {
+        String filename = String(file.name());
+        if (filename.endsWith(".rgb")) {
+            imageFiles.push_back(filename);
+        }
+        file = root.openNextFile();
+    }
+
+    if (imageFiles.empty()) {
+        Serial.println("No images to delete");
+        return;
+    }
+
+    // Pick a random file
+    int randomIndex = random(0, imageFiles.size());
+    String fileToDelete = imageFiles[randomIndex];
+
+    if (SPIFFS.remove(fileToDelete)) {
+        Serial.printf("Deleted random image: %s\n", fileToDelete.c_str());
+    } else {
+        Serial.printf("Failed to delete: %s\n", fileToDelete.c_str());
+    }
+}
+
+// Ensure SPIFFS has enough space, deleting random images if needed
+void ensureSPIFFSSpace(size_t requiredBytes) {
+    const size_t SAFETY_MARGIN = 4096;  // 4KB safety margin
+
+    size_t totalBytes = SPIFFS.totalBytes();
+    size_t usedBytes = SPIFFS.usedBytes();
+    size_t freeBytes = totalBytes - usedBytes;
+
+    Serial.printf("SPIFFS: %u/%u bytes used, %u free\n", usedBytes, totalBytes, freeBytes);
+
+    // Keep deleting until we have enough space
+    while (freeBytes < (requiredBytes + SAFETY_MARGIN)) {
+        Serial.printf("Insufficient space: need %u, have %u\n", requiredBytes + SAFETY_MARGIN, freeBytes);
+        deleteRandomImage();
+
+        // Recalculate free space
+        usedBytes = SPIFFS.usedBytes();
+        freeBytes = totalBytes - usedBytes;
+
+        // Safety check to prevent infinite loop
+        if (freeBytes == (totalBytes - usedBytes)) {
+            Serial.println("No more images to delete!");
+            break;
+        }
+    }
+
+    Serial.printf("SPIFFS space ensured: %u bytes free\n", freeBytes);
+}
+
+// Download an image from bridge server HTTP API and cache in SPIFFS
+bool downloadImageHTTP(const String& imagePath, const String& serverHost, uint16_t serverPort) {
+    HTTPClient http;
+
+    // Note: Bridge server HTTP API is on port 8081, WebSocket is on 8080
+    // Construct URL: http://{serverHost}:8081/images/{imagePath}
+    String url = "http://" + serverHost + ":8081/images/" + imagePath;
+
+    Serial.printf("Downloading image: %s\n", url.c_str());
+
+    http.begin(url);
+    int httpCode = http.GET();
+
+    if (httpCode != HTTP_CODE_OK) {
+        Serial.printf("HTTP GET failed: %d\n", httpCode);
+        http.end();
+        return false;
+    }
+
+    // Get image size
+    int contentLength = http.getSize();
+    const size_t expectedSize = SCREEN_WIDTH * SCREEN_HEIGHT * 2;  // 128x128x2 = 32768
+
+    if (contentLength != expectedSize) {
+        Serial.printf("Invalid image size: %d (expected %d)\n", contentLength, expectedSize);
+        http.end();
+        return false;
+    }
+
+    // Ensure SPIFFS has space
+    ensureSPIFFSSpace(expectedSize);
+
+    // Open file for writing
+    String fullPath = IMAGE_CACHE_PATH + imagePath;
+    File file = SPIFFS.open(fullPath, FILE_WRITE);
+
+    if (!file) {
+        Serial.printf("Failed to create file: %s\n", fullPath.c_str());
+        http.end();
+        return false;
+    }
+
+    // Download and write to SPIFFS
+    WiFiClient* stream = http.getStreamPtr();
+    uint8_t buffer[128];
+    size_t bytesWritten = 0;
+    bool writeError = false;
+
+    while (http.connected() && bytesWritten < expectedSize && !writeError) {
+        size_t availableBytes = stream->available();
+        if (availableBytes) {
+            size_t bytesToRead = min(availableBytes, sizeof(buffer));
+            size_t bytesRead = stream->readBytes(buffer, bytesToRead);
+
+            size_t written = file.write(buffer, bytesRead);
+            if (written != bytesRead) {
+                Serial.printf("[SPIFFS] ERROR: Write failed! Expected %u bytes, wrote %u bytes\n", bytesRead, written);
+                writeError = true;
+                break;
+            }
+
+            bytesWritten += bytesRead;
+        }
+        feedWatchdog();  // Feed watchdog during long downloads
+        delay(1);
+    }
+
+    file.close();
+    http.end();
+
+    if (writeError) {
+        Serial.printf("[SPIFFS] ERROR: Write error during download of %s\n", imagePath.c_str());
+        SPIFFS.remove(fullPath);  // Clean up failed download
+        return false;
+    } else if (bytesWritten == expectedSize) {
+        Serial.printf("[SPIFFS] Downloaded and cached: %s (%u bytes)\n", imagePath.c_str(), bytesWritten);
+        return true;
+    } else {
+        Serial.printf("[SPIFFS] ERROR: Download incomplete: %u/%u bytes\n", bytesWritten, expectedSize);
+        SPIFFS.remove(fullPath);  // Clean up incomplete download
+        return false;
+    }
 }
 
 void drawTextOption(uint8_t displayIndex, const String& text, uint32_t color) {
@@ -1213,25 +1408,68 @@ void setLEDStatus() {
     FastLED.show();
 }
 
+// ============================================================================
+// WATCHDOG MANAGEMENT
+// ============================================================================
+
+void disableWatchdog() {
+    Serial.println("[WDT] Disabling watchdog");
+    esp_task_wdt_deinit();
+}
+
+void enableWatchdog() {
+    Serial.println("[WDT] Enabling watchdog");
+    esp_task_wdt_config_t wdt_config = {
+        .timeout_ms = WATCHDOG_TIMEOUT_MS,
+        .idle_core_mask = (1 << 0) | (1 << 1),  // Monitor both cores
+        .trigger_panic = true
+    };
+    esp_task_wdt_init(&wdt_config);
+    esp_task_wdt_add(NULL);  // Add current task to watchdog
+}
+
+void feedWatchdog() {
+    esp_task_wdt_reset();
+}
+
+// ============================================================================
+// SPIFFS MANAGEMENT
+// ============================================================================
+
 void setupSPIFFS() {
+    Serial.println("[SPIFFS] Initializing...");
+
     // Try to mount SPIFFS, format if mount fails
     if (!SPIFFS.begin(false)) {
-        Serial.println("SPIFFS mount failed, formatting...");
+        Serial.println("[SPIFFS] Mount failed, formatting...");
+
+        // Disable watchdog during format (can take 10+ seconds)
+        disableWatchdog();
+
         if (SPIFFS.begin(true)) {  // true = format if mount fails
-            Serial.println("SPIFFS formatted and mounted successfully");
+            Serial.println("[SPIFFS] Formatted and mounted successfully");
+            enableWatchdog();
         } else {
-            Serial.println("SPIFFS format failed - image caching disabled");
+            Serial.println("[SPIFFS] ERROR: Format failed - image caching disabled");
+            enableWatchdog();
             return;
         }
+    } else {
+        Serial.println("[SPIFFS] Mounted successfully");
     }
 
-    Serial.printf("SPIFFS: %d bytes used of %d\n",
-                  SPIFFS.usedBytes(), SPIFFS.totalBytes());
+    size_t totalBytes = SPIFFS.totalBytes();
+    size_t usedBytes = SPIFFS.usedBytes();
+    size_t freeBytes = totalBytes - usedBytes;
+
+    Serial.printf("[SPIFFS] Total: %u bytes, Used: %u bytes, Free: %u bytes (%.1f%% free)\n",
+                  totalBytes, usedBytes, freeBytes,
+                  (freeBytes * 100.0f) / totalBytes);
 
     // Create image cache directory if it doesn't exist
     if (!SPIFFS.exists(IMAGE_CACHE_PATH)) {
         // SPIFFS doesn't support directories, but we use path prefixes
-        Serial.println("SPIFFS ready for image caching");
+        Serial.println("[SPIFFS] Ready for image caching");
     }
 }
 

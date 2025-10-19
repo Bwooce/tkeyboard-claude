@@ -7,7 +7,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { createCanvas } = require('canvas');
+const { createCanvas } = require('@napi-rs/canvas');
 
 // Configuration
 const IMAGE_SIZE = 128;

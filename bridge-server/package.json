@@ -12,11 +12,11 @@
     "test": "curl -s http://localhost:8081/status | jq ."
   },
   "dependencies": {
-    "ws": "^8.14.0",
-    "bonjour-service": "^1.2.1"
+    "@napi-rs/canvas": "^0.1.80",
+    "bonjour-service": "^1.2.1",
+    "ws": "^8.14.0"
   },
   "devDependencies": {
-    "canvas": "^2.11.2",
     "sharp": "^0.33.0"
   },
   "engines": {

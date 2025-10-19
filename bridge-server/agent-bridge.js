@@ -14,7 +14,9 @@ const Bonjour = require('bonjour-service');
 const config = {
     wsPort: 8080,
     httpPort: 8081,
-    debug: process.env.DEBUG === 'true'
+    debug: process.env.DEBUG === 'true',
+    sessionId: process.env.CLAUDE_SESSION_ID || `tk-${Date.now()}-${process.pid}`,
+    claudePid: parseInt(process.env.CLAUDE_PID || process.ppid)
 };
 
 // Initialize Bonjour for mDNS
@@ -84,6 +86,22 @@ function handleKeyboardMessage(data) {
 
 // Send message to T-Keyboard
 function sendToKeyboard(data) {
+    // Translate simple {"buttons":[...]} format to ESP32's expected format
+    if (data.buttons && Array.isArray(data.buttons)) {
+        const images = data.images || [];
+        const actions = data.actions || [];  // Optional: separate action text
+        data = {
+            type: 'update_options',
+            session_id: Date.now().toString(),
+            options: data.buttons.map((text, index) => ({
+                text: text || '',
+                action: actions[index] || '',  // If empty, ESP32 will use text
+                image: images[index] || '',
+                color: index === 0 ? '#00FFFF' : index === 1 ? '#FFFF00' : index === 2 ? '#FFFFFF' : '#00FF00'
+            }))
+        };
+    }
+
     if (tkeyboardClient && tkeyboardClient.readyState === WebSocket.OPEN) {
         const message = JSON.stringify(data);
         console.log(`→ To keyboard: ${message.substring(0, 200)}${message.length > 200 ? '...' : ''}`);
@@ -108,19 +126,23 @@ const server = http.createServer((req, res) => {
         return;
     }
 
-    // GET /hook/get-inputs - Retrieve and clear input queue
-    if (url.pathname === '/hook/get-inputs' && req.method === 'GET') {
+    // GET /inputs - Retrieve and clear input queue (polled by daemon)
+    if (url.pathname === '/inputs' && req.method === 'GET') {
         const inputs = [...inputQueue];
         inputQueue.length = 0;  // Clear queue
 
-        // Update last poll time - agent is alive
+        // Update last poll time - daemon is alive
         lastAgentPoll = Date.now();
 
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ inputs }));
+        res.end(JSON.stringify({
+            sessionId: config.sessionId,
+            claudePid: config.claudePid,
+            inputs
+        }));
 
         if (config.debug && inputs.length > 0) {
-            console.log(`Agent retrieved ${inputs.length} inputs`);
+            console.log(`Daemon retrieved ${inputs.length} inputs`);
         }
     }
 
@@ -131,9 +153,21 @@ const server = http.createServer((req, res) => {
         req.on('end', () => {
             try {
                 const data = JSON.parse(body);
+
+                // Check if keyboard is connected
+                if (!tkeyboardClient || tkeyboardClient.readyState !== WebSocket.OPEN) {
+                    res.writeHead(503);
+                    res.end(JSON.stringify({
+                        success: false,
+                        error: 'T-Keyboard not connected',
+                        connected: false
+                    }));
+                    return;
+                }
+
                 sendToKeyboard(data);
                 res.writeHead(200);
-                res.end(JSON.stringify({ success: true }));
+                res.end(JSON.stringify({ success: true, connected: true }));
             } catch (err) {
                 res.writeHead(400);
                 res.end(JSON.stringify({ error: err.message }));
@@ -141,15 +175,18 @@ const server = http.createServer((req, res) => {
         });
     }
 
-    // POST /hook/update - Update state (for agent to signal status)
-    else if (url.pathname === '/hook/update' && req.method === 'POST') {
+    // POST /state/update - Update state (for daemon to signal status)
+    else if (url.pathname === '/state/update' && req.method === 'POST') {
         let body = '';
         req.on('data', chunk => body += chunk);
         req.on('end', () => {
             try {
                 const data = JSON.parse(body);
 
-                // Update keyboard based on state
+                // Check if keyboard is connected
+                const isConnected = tkeyboardClient && tkeyboardClient.readyState === WebSocket.OPEN;
+
+                // Update keyboard based on state (if connected)
                 if (data.event === 'thinking_start') {
                     sendToKeyboard({
                         type: 'status',
@@ -175,9 +212,52 @@ const server = http.createServer((req, res) => {
                 }
 
                 res.writeHead(200);
-                res.end(JSON.stringify({ success: true }));
+                res.end(JSON.stringify({ success: true, connected: isConnected }));
             } catch (err) {
                 res.writeHead(400);
+                res.end(JSON.stringify({ error: err.message }));
+            }
+        });
+    }
+
+    // GET /session/verify - Verify session is still active
+    else if (url.pathname === '/session/verify' && req.method === 'GET') {
+        try {
+            // Check if Claude process is still alive
+            process.kill(config.claudePid, 0);
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({
+                sessionId: config.sessionId,
+                claudePid: config.claudePid,
+                alive: true
+            }));
+        } catch (err) {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({
+                sessionId: config.sessionId,
+                claudePid: config.claudePid,
+                alive: false
+            }));
+        }
+    }
+
+    // POST /test/button - Simulate button press (for testing without physical keyboard)
+    else if (url.pathname === '/test/button' && req.method === 'POST') {
+        let body = '';
+        req.on('data', chunk => body += chunk);
+        req.on('end', () => {
+            try {
+                const data = JSON.parse(body);
+                // Simulate keyboard message
+                handleKeyboardMessage({
+                    type: 'key_press',
+                    key: data.key || 1,
+                    text: data.text || 'Test'
+                });
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ success: true, queued: inputQueue.length }));
+            } catch (err) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ error: err.message }));
             }
         });
@@ -187,10 +267,36 @@ const server = http.createServer((req, res) => {
     else if (url.pathname === '/status' && req.method === 'GET') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
+            sessionId: config.sessionId,
+            claudePid: config.claudePid,
             connected: tkeyboardClient !== null,
             queueLength: inputQueue.length,
             uptime: process.uptime()
         }));
+    }
+
+    // GET /images/* - Serve image files
+    else if (req.method === 'GET' && url.pathname.startsWith('/images/')) {
+        const imageName = url.pathname.substring('/images/'.length);
+        const path = require('path');
+        const imagePath = path.join(__dirname, '../images/cache', imageName);
+
+        console.log(`[Image Request] ${imageName} -> ${imagePath}`);
+
+        fs.readFile(imagePath, (err, data) => {
+            if (err) {
+                console.log(`[Image Error] ${imagePath}: ${err.message}`);
+                res.writeHead(404, { 'Content-Type': 'text/plain' });
+                res.end('Image not found');
+            } else {
+                console.log(`[Image Served] ${imageName} (${data.length} bytes)`);
+                res.writeHead(200, {
+                    'Content-Type': 'application/octet-stream',
+                    'Content-Length': data.length
+                });
+                res.end(data);
+            }
+        });
     }
 
     else {
