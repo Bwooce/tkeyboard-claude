@@ -21,6 +21,13 @@ I need you to set up my T-Keyboard with TTY injection. Please:
    - Update keyboard buttons based on conversation context
    - Send state updates when thinking/idle
 
+   ⚠️ TOKEN EFFICIENCY - Run Commands Silently:
+   - Always use `curl -s` (silent mode) to avoid verbose output
+   - Redirect unnecessary output: `> /dev/null 2>&1`
+   - Only report critical status changes (session died, bridge crashed, etc.)
+   - Don't echo routine polling results
+   - Minimize token usage - silence is golden!
+
    ⚠️ CRITICAL - Agent Health Monitoring:
    You MUST check on every polling cycle (every 2 seconds):
 
@@ -71,14 +78,16 @@ I need you to set up my T-Keyboard with TTY injection. Please:
      ```bash
      curl -s -X POST http://localhost:8081/update \
        -H 'Content-Type: application/json' \
-       -d '{"buttons":["STOP","","",""],"actions":["STOP","","",""],"images":["stop.rgb","","",""]}'
+       -d '{"buttons":["STOP","","",""],"actions":["STOP","","",""],"images":["stop.rgb","","",""]}' \
+       > /dev/null 2>&1
      ```
 
      **AFTER completing task execution:**
      ```bash
      curl -s -X POST http://localhost:8081/update \
        -H 'Content-Type: application/json' \
-       -d '{"buttons":["Yes","No","Proceed","Help"],"actions":["Yes","No","Proceed","Help"],"images":["yes.rgb","no.rgb","proceed.rgb","help.rgb"]}'
+       -d '{"buttons":["Yes","No","Proceed","Help"],"actions":["Yes","No","Proceed","Help"],"images":["yes.rgb","no.rgb","proceed.rgb","help.rgb"]}' \
+       > /dev/null 2>&1
      ```
 
      * On API error: POST {"type":"status","state":"error","message":"error text"}
@@ -222,32 +231,37 @@ echo "Monitoring session: $INITIAL_SESSION_ID (PID $INITIAL_CLAUDE_PID)"
 
 # In your polling loop (every 2 seconds):
 while true; do
-    # Get current status
-    STATUS=$(curl -s http://localhost:8081/status)
+    # Get current status (silent - no token waste)
+    STATUS=$(curl -s http://localhost:8081/status 2>/dev/null)
 
     if [ $? -ne 0 ] || [ -z "$STATUS" ]; then
-        echo "Bridge server not responding - attempting restart..."
-        cd tkeyboard-claude/bridge-server && node agent-bridge.js &
+        # ONLY report critical failures
+        echo "⚠️ Bridge died - restarting"
+        cd tkeyboard-claude/bridge-server && node agent-bridge.js > /dev/null 2>&1 &
         sleep 5
         continue
     fi
 
-    # Check session consistency
-    CURRENT_SESSION=$(echo "$STATUS" | jq -r '.sessionId')
-    CURRENT_PID=$(echo "$STATUS" | jq -r '.claudePid')
+    # Check session consistency (silent extraction)
+    CURRENT_SESSION=$(echo "$STATUS" | jq -r '.sessionId' 2>/dev/null)
+    CURRENT_PID=$(echo "$STATUS" | jq -r '.claudePid' 2>/dev/null)
 
     if [ "$CURRENT_SESSION" != "$INITIAL_SESSION_ID" ]; then
-        echo "Session changed from $INITIAL_SESSION_ID to $CURRENT_SESSION - terminating agent"
+        # ONLY report when terminating
+        echo "⚠️ Session changed - agent terminating"
         exit 0
     fi
 
-    # Check if main Claude session still alive
+    # Check if main Claude session still alive (silent check)
     if ! kill -0 "$CURRENT_PID" 2>/dev/null; then
-        echo "Main Claude session (PID $CURRENT_PID) died - terminating agent"
+        # ONLY report when terminating
+        echo "⚠️ Main session died (PID $CURRENT_PID) - agent terminating"
         exit 0
     fi
 
-    # Process inputs and update keyboard...
+    # Process inputs and update keyboard (ALL SILENT)
+    # curl -s http://localhost:8081/inputs > /dev/null 2>&1
+    # curl -s -X POST http://localhost:8081/update ... > /dev/null 2>&1
 
     sleep 2
 done
