@@ -59,7 +59,14 @@ Run ALL commands silently to minimize token usage:
      > /dev/null 2>&1
    ```
 
-4. Report ONCE: "Monitoring session $INITIAL_SESSION_ID (PID $INITIAL_CLAUDE_PID) - Default buttons set"
+4. Start input daemon for button press handling:
+   ```bash
+   bash installation/tkeyboard-input-daemon.sh "$INITIAL_SESSION_ID" "$INITIAL_CLAUDE_PID" > /tmp/tkeyboard-input-daemon.log 2>&1 &
+   INPUT_DAEMON_PID=$!
+   echo "Input daemon started (PID $INPUT_DAEMON_PID)"
+   ```
+
+5. Report ONCE: "Monitoring session $INITIAL_SESSION_ID (PID $INITIAL_CLAUDE_PID) - Default buttons set, input daemon running"
 
 ## Health Monitoring Loop (Every 2 Seconds)
 
@@ -82,12 +89,14 @@ while true; do
 
     if [ "$CURRENT_SESSION" != "$INITIAL_SESSION_ID" ]; then
         echo "⚠️ Session changed - terminating"
+        kill $INPUT_DAEMON_PID 2>/dev/null
         exit 0
     fi
 
     # Check main session alive
     if ! kill -0 "$CURRENT_PID" 2>/dev/null; then
         echo "⚠️ Main session died (PID $CURRENT_PID) - terminating"
+        kill $INPUT_DAEMON_PID 2>/dev/null
         exit 0
     fi
 

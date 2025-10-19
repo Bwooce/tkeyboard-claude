@@ -1,29 +1,22 @@
 #!/bin/bash
 # T-Keyboard Input Daemon
 # Monitors for all button presses and injects text/commands to specific Claude session
-# - STOP button: Sends Ctrl+C (interrupt)
+# - STOP button: Sends Esc (stops generation)
 # - Other buttons: Injects button text + Enter (autonomous input)
 
-if [ $# -ne 3 ]; then
-    echo "Usage: $0 SESSION_ID CLAUDE_PID TTY"
+if [ $# -ne 2 ]; then
+    echo "Usage: $0 SESSION_ID CLAUDE_PID"
     exit 1
 fi
 
 SESSION_ID="$1"
 CLAUDE_PID="$2"
-TTY_PATH="$3"
 
-echo "[Stop Daemon] Starting for session $SESSION_ID (PID=$CLAUDE_PID, TTY=$TTY_PATH)"
+echo "[Input Daemon] Starting for session $SESSION_ID (PID=$CLAUDE_PID)"
 
 # Validate Claude process exists
 if ! kill -0 "$CLAUDE_PID" 2>/dev/null; then
-    echo "[Stop Daemon] ERROR: Claude process $CLAUDE_PID not found"
-    exit 1
-fi
-
-# Validate TTY exists
-if [ ! -e "$TTY_PATH" ]; then
-    echo "[Stop Daemon] ERROR: TTY $TTY_PATH not found"
+    echo "[Input Daemon] ERROR: Claude process $CLAUDE_PID not found"
     exit 1
 fi
 
@@ -60,14 +53,14 @@ while true; do
 
                 if [ ! -z "$BUTTON_TEXT" ]; then
                     if [ "$BUTTON_TEXT" == "STOP" ]; then
-                        # STOP button - send Ctrl+C
-                        echo "[Input Daemon] STOP button pressed! Sending Ctrl+C to $TTY_PATH"
-                        echo -ne "\003" > "$TTY_PATH"
+                        # STOP button - send Esc (key code 53) WITHOUT Enter
+                        echo "[Input Daemon] STOP button pressed! Sending Esc"
+                        osascript -e 'tell application "System Events" to key code 53' > /dev/null 2>&1
 
                         if [ $? -eq 0 ]; then
-                            echo "[Input Daemon] Ctrl+C sent successfully"
+                            echo "[Input Daemon] Esc sent successfully"
                         else
-                            echo "[Input Daemon] ERROR: Failed to send Ctrl+C to $TTY_PATH"
+                            echo "[Input Daemon] ERROR: Failed to send Esc"
                         fi
 
                         sleep 1  # Cooldown after interrupt

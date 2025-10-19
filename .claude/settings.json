@@ -25,7 +25,8 @@
   },
   "permissions": {
     "allow": [
-      "Bash(bash bridge-server/monitor.sh > /tmp/tkeyboard-monitor.log 2>&1 &)"
+      "Bash(bash bridge-server/monitor.sh > /tmp/tkeyboard-monitor.log 2>&1 &)",
+      "Bash(bash installation/tkeyboard-input-daemon.sh:*)"
     ]
   }
 }
