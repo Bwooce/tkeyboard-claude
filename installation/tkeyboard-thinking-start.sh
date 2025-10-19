@@ -10,4 +10,4 @@ curl -s -X POST http://localhost:8081/state/update \
 # Update buttons to show STOP
 curl -s -X POST http://localhost:8081/update \
   -H 'Content-Type: application/json' \
-  -d '{"buttons":["STOP","","",""],"images":["stop.rgb","","",""]}' > /dev/null 2>&1
+  -d '{"buttons":["STOP","","",""],"actions":["STOP","","",""],"images":["stop.rgb","","",""]}' > /dev/null 2>&1

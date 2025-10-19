@@ -10,4 +10,4 @@ curl -s -X POST http://localhost:8081/state/update \
 # Update buttons to default options
 curl -s -X POST http://localhost:8081/update \
   -H 'Content-Type: application/json' \
-  -d '{"buttons":["Yes","No","Continue","Help"]}' > /dev/null 2>&1
+  -d '{"buttons":["Yes","No","Proceed","Help"],"actions":["Yes","No","Proceed","Help"],"images":["yes.rgb","no.rgb","proceed.rgb","help.rgb"]}' > /dev/null 2>&1

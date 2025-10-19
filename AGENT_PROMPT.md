@@ -37,9 +37,21 @@ I need you to set up my T-Keyboard with TTY injection. Please:
 4. Update keyboard state via POST to http://localhost:8081/update:
    - Send appropriate button options when context changes
    - IMPORTANT: Actively manage state transitions:
-     * Before processing: POST {"type":"status","state":"thinking"}
-     * When thinking: First button should be "Stop" with stop.rgb image
-     * After completing: POST {"type":"status","state":"idle"}
+
+     **BEFORE starting any task execution:**
+     ```bash
+     curl -s -X POST http://localhost:8081/update \
+       -H 'Content-Type: application/json' \
+       -d '{"buttons":["STOP","","",""],"actions":["STOP","","",""],"images":["stop.rgb","","",""]}'
+     ```
+
+     **AFTER completing task execution:**
+     ```bash
+     curl -s -X POST http://localhost:8081/update \
+       -H 'Content-Type: application/json' \
+       -d '{"buttons":["Yes","No","Proceed","Help"],"actions":["Yes","No","Proceed","Help"],"images":["yes.rgb","no.rgb","proceed.rgb","help.rgb"]}'
+     ```
+
      * On API error: POST {"type":"status","state":"error","message":"error text"}
      * On rate limit: Try to POST {"type":"status","state":"limit","countdown":<retry_after>}
        (Extract retry_after from error response if available, otherwise bridge auto-detects)

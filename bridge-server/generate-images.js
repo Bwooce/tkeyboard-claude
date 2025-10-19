@@ -387,7 +387,15 @@ if (require.main === module) {
     if (args.length >= 2 && args[0] === '--emoji') {
         // Generate emoji icon
         const emoji = args[1];
-        const name = args[2] || emoji.codePointAt(0).toString(16);
+        let name = args[2] || emoji.codePointAt(0).toString(16);
+
+        // Validate and sanitize filename
+        if (name.startsWith('--')) {
+            console.error(`Error: Invalid filename "${name}" - looks like a flag. Usage: --emoji "EMOJI" name`);
+            process.exit(1);
+        }
+        name = name.replace(/[^a-z0-9_-]/gi, '_');  // Sanitize to alphanumeric + underscore/dash
+
         generateEmojiIcon(emoji, name);
 
     } else if (args.length >= 2 && args[0] === '--text') {
