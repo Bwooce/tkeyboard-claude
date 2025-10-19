@@ -24,11 +24,12 @@ T-Keyboard Press → Bridge Server Queue → Claude Agent (polls) → Immediate 
 - Queues keyboard inputs
 - No complex state management
 
-### 3. Claude Agent (runs in Claude Code)
-- Polls `/hook/get-inputs` every 2 seconds
-- Processes keyboard inputs immediately
+### 3. Claude Agent (runs in Claude Code via Task tool)
+- Polls `/inputs` every 2 seconds
+- Monitors main session health (auto-terminates if session dies)
 - Updates display based on context
-- Can start bridge server itself
+- Can restart bridge server if it crashes
+- Runs silently to minimize token usage
 
 ## Hardware Details
 
@@ -89,7 +90,7 @@ curl -X POST http://localhost:8081/update \
   -d '{"type":"key_press","key":1,"text":"Yes"}'
 
 # Check queue
-curl http://localhost:8081/hook/get-inputs
+curl http://localhost:8081/inputs
 ```
 
 ## Why This Approach?
@@ -118,15 +119,36 @@ tkeyboard-claude/
 └── README.md                 # User documentation
 ```
 
-## The Agent Prompt
+## Starting the T-Keyboard Agent
 
-Just paste this to start everything:
+**IMPORTANT:** When working on this project, use the Task tool to launch a background agent that manages the T-Keyboard.
+
+### How to Start the Agent
+
+Use the Task tool with the `general-purpose` subagent type and the prompt from `AGENT_PROMPT.md`:
 
 ```
-I need you to set up and monitor my T-Keyboard device. Please:
-1. Start the bridge server in tkeyboard-claude/bridge-server
-2. Monitor http://localhost:8081/hook/get-inputs every 2 seconds
-3. Process keyboard inputs immediately
-4. Update display based on context
-Start now.
+Read AGENT_PROMPT.md and launch a general-purpose agent with those instructions.
+The agent should:
+- Monitor the bridge server at http://localhost:8081
+- Poll /inputs every 2 seconds
+- Update keyboard buttons based on context
+- Auto-terminate if this main session dies
+- Run silently to minimize token usage
 ```
+
+### Agent Responsibilities
+
+The agent will:
+- Start bridge server if not running
+- Monitor main session health (auto-terminates if main session dies)
+- Update keyboard buttons dynamically (context-aware)
+- Show STOP button during processing
+- Manage thinking states automatically
+
+### Without the Agent
+
+You can still test the system manually:
+- Start bridge: `node bridge-server/agent-bridge.js`
+- Update buttons: `curl -X POST http://localhost:8081/update -d '{"buttons":["Yes","No","Proceed","Help"]}'`
+- But you won't get automatic context-aware updates
