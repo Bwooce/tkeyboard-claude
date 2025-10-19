@@ -333,8 +333,8 @@ function generateEmojiIcon(emoji, name) {
     ctx.fillStyle = '#000000';
     ctx.fillRect(0, 0, IMAGE_SIZE, IMAGE_SIZE);
 
-    // Draw emoji
-    ctx.font = '64px Arial, "Apple Color Emoji", "Segoe UI Emoji"';
+    // Draw emoji (96px = 75% of 128px display for optimal visibility)
+    ctx.font = '96px Arial, "Apple Color Emoji", "Segoe UI Emoji"';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText(emoji, IMAGE_SIZE / 2, IMAGE_SIZE / 2);

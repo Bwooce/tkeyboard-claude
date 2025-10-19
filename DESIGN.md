@@ -464,14 +464,27 @@ node generate-images.js --text "Y" --emoji "✅" --name yes_alt
 #### 3. Display vs Action Text Separation
 **Goal:** Support images or short labels with detailed action text
 
+**⚠️ CRITICAL: Action Text Behavior**
+
+The `action` field is **literally injected to the terminal** as if the user typed it. Choose action text based on context:
+
+**For Claude Code Built-in Prompts (e.g., `[Yes/Always/No]`):**
+- ✅ **Use SHORT exact answers:** `actions: ["Yes", "Always", "No"]`
+- ❌ **DON'T use verbose text:** `actions: ["Yes, I agree to proceed", ...]` ← Creates duplicate messages!
+
+**For Conversational Input (custom questions):**
+- ✅ **Use verbose descriptive text:** `actions: ["Please explain this in more detail"]`
+- ✅ **Full sentences are appropriate:** `actions: ["Show me the error logs from yesterday"]`
+
 **Use Cases:**
 
-| Display | Action Text | Reason |
-|---------|-------------|--------|
-| 🛑 (image) | "Please stop what you're doing and wait for further instructions" | Image is clearer than word "STOP" |
-| ✅ (yes icon) | "Yes, I agree to overwrite the file" | Confirm specific operation |
-| "1" (short) | "Select option 1: Install dependencies and rebuild" | Number reference with full description |
-| ▶️ (play icon) | "Run the full test suite with verbose output" | Icon + detailed command |
+| Display | Action Text | Context | Result |
+|---------|-------------|---------|--------|
+| ✅ (yes icon) | "Yes" | Claude prompt `[Yes/Always/No]` | Answers prompt cleanly |
+| ✅ (yes icon) | "Yes, I agree to overwrite the file" | Custom question | Creates conversational message |
+| "1" (short) | "1" | Claude prompt `[1/2/3]` | Selects option 1 |
+| "1" (short) | "Select option 1: Install dependencies" | Custom menu | Sends detailed instruction |
+| 🛑 (image) | "STOP" | Interrupt signal | Sends Ctrl+C (handled specially) |
 
 **ESP32 Implementation:**
 ```cpp

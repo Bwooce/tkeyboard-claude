@@ -183,6 +183,49 @@ The input daemon isn't running or stopped polling. Restart with:
 - Logs: `/tmp/tkeyboard-*.log`
 - Thinking state hooks (optional): `~/.claude/hooks/tkeyboard-thinking-*.sh`
 
+## Claude Code Tool Permissions (For Agent Mode)
+
+If using an agent to manage keyboard buttons dynamically, configure these tool permissions:
+
+**Add to Claude Code Settings (for agent session):**
+
+These commands should be pre-approved for the agent to run without prompts:
+
+```
+Bash(curl -s http://localhost:8081/inputs)
+Bash(curl -s -X POST http://localhost:8081/update)
+Bash(curl -s -X POST http://localhost:8081/state/update)
+Bash(node agent-bridge.js)
+Bash(~/.claude/tkeyboard-agent-start.sh)
+Bash(cd bridge-server && node generate-images.js*)
+Read(//Users/*/Documents/Arduino/tkeyboard-claude/**)
+Read(/Users/*/Documents/Arduino/tkeyboard-claude/**)
+Read(//tmp/tkeyboard-*.log)
+Read(/tmp/tkeyboard-*.log)
+```
+
+**Why these permissions are needed:**
+- **curl http://localhost:8081/inputs** - Poll keyboard for button presses (keeps bridge healthy)
+- **curl POST /update** - Update button display based on context
+- **curl POST /state/update** - Update keyboard state (thinking/idle/error)
+- **node agent-bridge.js** - Start bridge server if not running
+- **tkeyboard-agent-start.sh** - Launch input daemon for TTY injection
+- **generate-images.js** - Create custom icons on-the-fly
+- **Read permissions** - Access logs, configs, and generated images
+
+**How to configure:**
+
+1. Open Claude Code settings
+2. Navigate to Tool Permissions or Allowed Tools
+3. Add the patterns above to pre-approved tools list
+4. Agent can now manage keyboard without manual approvals
+
+**Security:**
+- All commands are localhost-only (no external network access)
+- File reads limited to project directory and temp logs
+- Bridge server only accepts connections from localhost
+- No sudo or elevated privileges required
+
 ## Security Notes
 
 **AppleScript Accessibility Permissions:**

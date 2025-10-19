@@ -29,9 +29,10 @@ I need you to set up my T-Keyboard with TTY injection. Please:
    - Default → ✅ Yes, ❌ No, ▶️ Continue, ❓ Help
 
    IMPORTANT - Display vs Action Text:
-   - Use images/emojis for display (visual recognition)
-   - Provide detailed action text that gets sent when pressed
-   - Example: Display "🛑" but send "Please stop what you're doing and wait"
+   - Use images for display (visual recognition)
+   - Action text is what gets LITERALLY INJECTED to terminal
+   - For Claude prompts: Match expected input (e.g., "Yes" not "Yes, I agree")
+   - For custom questions: Can use detailed text (e.g., "Please explain this in detail")
 
 4. Update keyboard state via POST to http://localhost:8081/update:
    - Send appropriate button options when context changes
@@ -47,15 +48,16 @@ I need you to set up my T-Keyboard with TTY injection. Please:
      ```json
      {
        "buttons": ["STOP", "Yes", "No", "Info"],
-       "actions": [
-         "Please stop what you're doing and wait for further instructions",
-         "Yes, I agree to proceed with this operation",
-         "No, cancel this operation",
-         "Give me more information about what will happen"
-       ],
+       "actions": ["STOP", "Yes", "No", "Info"],
        "images": ["stop.rgb", "yes.rgb", "no.rgb", "info.rgb"]
      }
      ```
+
+   - ⚠️ CRITICAL - Action Text Rules:
+     * Action text is LITERALLY INJECTED to terminal as if user typed it
+     * For Claude Code prompts ([Yes/Always/No]): Use SHORT exact answers: ["Yes", "Always", "No"]
+     * For conversational input: Use verbose text: ["Please explain this in detail"]
+     * DON'T use verbose actions for simple prompts - it creates duplicate messages!
 
    - IMPORTANT: buttons array should contain ASCII text only (no emojis)
    - Emojis should be sent as .rgb image files in the images array
@@ -146,18 +148,15 @@ I need you to set up my T-Keyboard with TTY injection and dynamic images:
    ```json
    POST http://localhost:8081/update
    {
-     "buttons": ["🛑", "✅", "❌", "ℹ️"],
-     "actions": [
-       "Stop and wait for further instructions",
-       "Yes, proceed with the operation",
-       "No, cancel the operation",
-       "Tell me more about what will happen"
-     ],
+     "buttons": ["STOP", "Yes", "No", "Info"],
+     "actions": ["STOP", "Yes", "No", "Info"],
      "images": ["stop.rgb", "yes.rgb", "no.rgb", "info.rgb"]
    }
    ```
-   - Display shows emoji/image (compact, visual)
-   - Action contains full text sent when pressed (detailed, contextual)
+   - Display shows image from images array (compact, visual)
+   - Action text is LITERALLY injected to terminal as if user typed it
+   - For Claude prompts: Use SHORT exact answers matching expected input
+   - For custom questions: Can use verbose text for conversational responses
    - If actions omitted, buttons text is used as action
 
 7. Claude TUI prompt detection:
