@@ -85,8 +85,20 @@ struct KeyOption {
 KeyOption currentOptions[4];
 bool optionsUpdated = false;
 
-// Claude State
+// Forward Declarations (needed for FSM code)
+void drawTextOption(uint8_t displayIndex, const String& text, uint32_t color);
+void drawLargeText(uint8_t displayIndex, const String& text, uint32_t color);
+void drawRateLimitTimer();
+void drawErrorIcon();
+bool loadImageFromSPIFFS(const String& path, uint8_t display);
+
+// ============================================================================
+// FINITE STATE MACHINE ARCHITECTURE
+// ============================================================================
+
+// State definitions
 enum ClaudeState {
+    CONNECTING,      // Waiting for WebSocket connection
     IDLE,
     THINKING,
     ERROR,
@@ -94,9 +106,201 @@ enum ClaudeState {
     WAITING_INPUT
 };
 
-ClaudeState claudeState = IDLE;
-unsigned long rateLimitStartTime = 0;
-int rateLimitCountdown = 0;  // 0 means unknown, show elapsed time
+// FSM state tracking
+struct FSMState {
+    ClaudeState current;
+    ClaudeState previous;
+
+    // State-specific data
+    unsigned long rateLimitStartTime;
+    int rateLimitCountdown;  // 0 = unknown duration
+
+    // Display override flags - allow display_update messages to persist
+    bool displayOverride[4];  // True if display was manually set via display_update
+
+    // State entry time (for animations and timeouts)
+    unsigned long stateEntryTime;
+} fsm;
+
+// Initialize FSM
+void initFSM() {
+    fsm.current = CONNECTING;
+    fsm.previous = CONNECTING;
+    fsm.rateLimitStartTime = 0;
+    fsm.rateLimitCountdown = 0;
+    fsm.stateEntryTime = millis();
+    for (int i = 0; i < 4; i++) {
+        fsm.displayOverride[i] = false;
+    }
+}
+
+// State transition function - ensures clean transitions
+void transitionToState(ClaudeState newState) {
+    if (fsm.current == newState) return;  // No-op if already in this state
+
+    // Exit actions for current state
+    exitState(fsm.current);
+
+    // Update state
+    fsm.previous = fsm.current;
+    fsm.current = newState;
+    fsm.stateEntryTime = millis();
+
+    // Clear display overrides on state change
+    for (int i = 0; i < 4; i++) {
+        fsm.displayOverride[i] = false;
+    }
+
+    // Entry actions for new state
+    enterState(newState);
+
+    Serial.printf("FSM: %d -> %d\n", fsm.previous, fsm.current);
+}
+
+// State entry actions
+void enterState(ClaudeState state) {
+    switch (state) {
+        case CONNECTING:
+            // Waiting for WebSocket connection
+            break;
+
+        case IDLE:
+            // Clear any state-specific data
+            break;
+
+        case THINKING:
+            // Nothing special needed
+            break;
+
+        case ERROR:
+            // Reset error animation
+            break;
+
+        case RATE_LIMITED:
+            // Record start time if we don't have one
+            if (fsm.rateLimitStartTime == 0) {
+                fsm.rateLimitStartTime = millis();
+            }
+            break;
+
+        case WAITING_INPUT:
+            // Nothing special needed
+            break;
+    }
+
+    // Render the new state's UI
+    renderStateUI();
+}
+
+// State exit actions
+void exitState(ClaudeState state) {
+    switch (state) {
+        case RATE_LIMITED:
+            // Clear rate limit data when exiting
+            fsm.rateLimitStartTime = 0;
+            fsm.rateLimitCountdown = 0;
+            break;
+
+        default:
+            // Most states don't need exit actions
+            break;
+    }
+}
+
+// Render UI for current state - only draws non-overridden displays
+void renderStateUI() {
+    for (int i = 0; i < 4; i++) {
+        // Skip displays that have manual overrides
+        if (fsm.displayOverride[i]) continue;
+
+        renderDisplayForState(i, fsm.current);
+    }
+}
+
+// Render a single display based on current state
+void renderDisplayForState(int displayIndex, ClaudeState state) {
+    switch (state) {
+        case CONNECTING:
+            // Waiting for WebSocket - show "Wait | ing | ..." on keys 2-4, blank on key 1
+            switch (displayIndex) {
+                case 0:
+                    // Key 1 - blank
+                    selectDisplay(0);
+                    tft.fillScreen(TFT_BLACK);
+                    break;
+                case 1:
+                    // Key 2 - "Wait"
+                    drawTextOption(1, "Wait", 0x00FFFF);  // Cyan
+                    break;
+                case 2:
+                    // Key 3 - "ing"
+                    drawTextOption(2, "ing", 0xFFFFFF);  // White
+                    break;
+                case 3:
+                    // Key 4 - "..."
+                    drawTextOption(3, "...", 0x00FF00);  // Green
+                    break;
+            }
+            break;
+
+        case IDLE:
+        case THINKING:
+        case WAITING_INPUT:
+            // Show current options
+            if (currentOptions[displayIndex].hasImage) {
+                if (!loadImageFromSPIFFS(currentOptions[displayIndex].imagePath, displayIndex)) {
+                    drawTextOption(displayIndex, currentOptions[displayIndex].text, currentOptions[displayIndex].color);
+                }
+            } else {
+                drawTextOption(displayIndex, currentOptions[displayIndex].text, currentOptions[displayIndex].color);
+            }
+            break;
+
+        case RATE_LIMITED:
+            // Spread rate limit UI across 4 displays
+            switch (displayIndex) {
+                case 0:
+                    drawLargeText(0, "RATE", 0xFFFF00);  // Yellow
+                    break;
+                case 1:
+                    drawLargeText(1, "LIMIT", 0xFFFF00);  // Yellow
+                    break;
+                case 2:
+                    // Timer display - updated separately in loop()
+                    drawRateLimitTimer();
+                    break;
+                case 3:
+                    drawTextOption(3, "Continue", 0x00FF00);  // Green
+                    break;
+            }
+            break;
+
+        case ERROR:
+            // Spread error UI across 4 displays
+            switch (displayIndex) {
+                case 0:
+                    drawLargeText(0, "ERROR", 0xFF0000);  // Red
+                    break;
+                case 1:
+                    // Animated error icon - updated separately in loop()
+                    drawErrorIcon();
+                    break;
+                case 2:
+                    drawTextOption(2, "Continue", 0x00FF00);  // Green
+                    break;
+                case 3:
+                    drawTextOption(3, "Retry", 0xFFA500);  // Orange
+                    break;
+            }
+            break;
+    }
+}
+
+// Update displays - called when options change
+void updateDisplaysIfNeeded() {
+    // Only update displays that are not manually overridden
+    renderStateUI();
+}
 
 // Function Declarations
 void setupHardware();
@@ -141,6 +345,9 @@ void setup() {
     } else {
         Serial.println("Warning: PSRAM not found!");
     }
+
+    // Initialize FSM
+    initFSM();
 
     setupHardware();
     loadPreferences();
@@ -255,32 +462,45 @@ void loop() {
 
     // Update displays if needed - only when WebSocket is connected
     if (optionsUpdated && state.wsConnected) {
-        updateDisplays();
+        updateDisplaysIfNeeded();
         optionsUpdated = false;
     }
 
-    // Update rate limit display
-    if (claudeState == RATE_LIMITED) {
-        static unsigned long lastUpdate = 0;
-        if (millis() - lastUpdate > 1000) {
-            // Countdown if we have a value
-            if (rateLimitCountdown > 0) {
-                rateLimitCountdown--;
+    // State-specific periodic updates
+    switch (fsm.current) {
+        case RATE_LIMITED: {
+            // Update timer every second
+            static unsigned long lastUpdate = 0;
+            if (millis() - lastUpdate > 1000) {
+                // Countdown if we have a value
+                if (fsm.rateLimitCountdown > 0) {
+                    fsm.rateLimitCountdown--;
+                }
+                // Redraw the timer display (only if not overridden)
+                if (!fsm.displayOverride[2]) {
+                    drawRateLimitTimer();
+                }
+                lastUpdate = millis();
             }
-            // Redraw the timer display
-            drawRateLimitTimer();
-            lastUpdate = millis();
+            break;
         }
-    }
 
-    // Update error display (for pulsing animation)
-    if (claudeState == ERROR) {
-        static unsigned long lastUpdate = 0;
-        if (millis() - lastUpdate > 50) {
-            // Redraw the error icon (for pulsing effect)
-            drawErrorIcon();
-            lastUpdate = millis();
+        case ERROR: {
+            // Update pulsing error icon every 50ms
+            static unsigned long lastUpdate = 0;
+            if (millis() - lastUpdate > 50) {
+                // Redraw the error icon (only if not overridden)
+                if (!fsm.displayOverride[1]) {
+                    drawErrorIcon();
+                }
+                lastUpdate = millis();
+            }
+            break;
         }
+
+        default:
+            // No periodic updates for other states
+            break;
     }
 
     // Update LED status
@@ -327,13 +547,13 @@ void setupHardware() {
 
 void selectDisplay(uint8_t index) {
     // Use N085_Screen_Set() from T-Keyboard_S3_Drive library
-    // Maps index (0-3) to screen constants (N085_Screen_1 through N085_Screen_4)
-    // NOTE: Rotation is set ONCE during initialization, not per display selection (LILYGO pattern)
+    // Maps logical index (0-3) to physical screen constants
+    // Physical layout: leftmost key = 1, rightmost key = 4
     switch (index) {
-        case 0: N085_Screen_Set(N085_Screen_1); break;
-        case 1: N085_Screen_Set(N085_Screen_2); break;
-        case 2: N085_Screen_Set(N085_Screen_3); break;
-        case 3: N085_Screen_Set(N085_Screen_4); break;
+        case 0: N085_Screen_Set(N085_Screen_1); break;  // Logical 0 → Physical Key 1 (leftmost)
+        case 1: N085_Screen_Set(N085_Screen_2); break;  // Logical 1 → Physical Key 2
+        case 2: N085_Screen_Set(N085_Screen_3); break;  // Logical 2 → Physical Key 3
+        case 3: N085_Screen_Set(N085_Screen_4); break;  // Logical 3 → Physical Key 4 (rightmost)
         default: N085_Screen_Set(N085_Screen_1); break;
     }
 }
@@ -396,29 +616,29 @@ void setupWiFi() {
         preferences.getString("wifi_pass", "").c_str()
     );
 
-    // Show connecting status on displays
-    N085_Screen_Set(N085_Screen_1);
+    // Show connecting status on displays using selectDisplay()
+    selectDisplay(0);
     tft.fillScreen(TFT_BLACK);
     tft.setTextSize(2);
     tft.setTextColor(TFT_CYAN);
     tft.setCursor(15, 50);
     tft.print("WiFi");
 
-    N085_Screen_Set(N085_Screen_2);
+    selectDisplay(1);
     tft.fillScreen(TFT_BLACK);
     tft.setTextSize(2);
     tft.setTextColor(TFT_YELLOW);
     tft.setCursor(5, 50);
     tft.print("Connect");
 
-    N085_Screen_Set(N085_Screen_3);
+    selectDisplay(2);
     tft.fillScreen(TFT_BLACK);
     tft.setTextSize(2);
     tft.setTextColor(TFT_WHITE);
     tft.setCursor(25, 50);
     tft.print("ing");
 
-    N085_Screen_Set(N085_Screen_4);
+    selectDisplay(3);
     tft.fillScreen(TFT_BLACK);
     tft.setTextSize(2);
     tft.setTextColor(TFT_GREEN);
@@ -461,7 +681,7 @@ void setupWiFi() {
         fill_solid(leds, NUM_LEDS, CRGB::Green);
         FastLED.show();
 
-        // Show waiting status on displays
+        // Show waiting status on displays - use FSM CONNECTING state
         String host = preferences.getString("bridge_host", "tkeyboard-bridge.local");
         int port = preferences.getInt("bridge_port", 8080);
 
@@ -471,30 +691,8 @@ void setupWiFi() {
             tft.fillScreen(TFT_BLACK);
         }
 
-        // Simple status display on each key
-        N085_Screen_Set(N085_Screen_1);
-        tft.setTextSize(2);
-        tft.setTextColor(TFT_YELLOW);
-        tft.setCursor(15, 50);
-        tft.print("Ready");
-
-        N085_Screen_Set(N085_Screen_2);
-        tft.setTextSize(2);
-        tft.setTextColor(TFT_CYAN);
-        tft.setCursor(25, 50);
-        tft.print("Wait");
-
-        N085_Screen_Set(N085_Screen_3);
-        tft.setTextSize(2);
-        tft.setTextColor(TFT_WHITE);
-        tft.setCursor(25, 50);
-        tft.print("ing");
-
-        N085_Screen_Set(N085_Screen_4);
-        tft.setTextSize(2);
-        tft.setTextColor(TFT_GREEN);
-        tft.setCursor(30, 50);
-        tft.print("...");
+        // FSM will handle display rendering via CONNECTING state
+        renderStateUI();
 
         Serial.printf("Server: %s:%d\n", host.c_str(), port);
     } else {
@@ -550,6 +748,10 @@ void handleWebSocketEvent(WStype_t type, uint8_t* payload, size_t length) {
         case WStype_CONNECTED: {
             Serial.println("WebSocket connected");
             state.wsConnected = true;
+
+            // Transition from CONNECTING to IDLE
+            transitionToState(IDLE);
+
             // Green LEDs for connected
             fill_solid(leds, NUM_LEDS, CRGB::Green);
             FastLED.show();
@@ -607,8 +809,10 @@ void handleWebSocketEvent(WStype_t type, uint8_t* payload, size_t length) {
 
 void processClaudeMessage(JsonDocument& doc) {
     String type = doc["type"];
+    Serial.printf("[DEBUG] Processing message type: %s\n", type.c_str());
 
     if (type == "update_options") {
+        Serial.println("[DEBUG] Handler: update_options");
         state.sessionId = doc["session_id"].as<String>();
         JsonArray options = doc["options"];
 
@@ -617,31 +821,71 @@ void processClaudeMessage(JsonDocument& doc) {
             currentOptions[i].imagePath = options[i]["image"].as<String>();
             currentOptions[i].color = strtoul(options[i]["color"].as<String>().substring(1).c_str(), NULL, 16);
             currentOptions[i].hasImage = currentOptions[i].imagePath.length() > 0;
+            Serial.printf("[DEBUG]   Key %d: %s\n", i+1, currentOptions[i].text.c_str());
         }
 
         optionsUpdated = true;
 
     } else if (type == "status") {
         String stateStr = doc["state"];
+        Serial.printf("[DEBUG] Handler: status, state=%s\n", stateStr.c_str());
+
+        // Translate status string to FSM state
+        ClaudeState newState;
         if (stateStr == "thinking") {
-            claudeState = THINKING;
+            newState = THINKING;
         } else if (stateStr == "idle") {
-            claudeState = IDLE;
+            newState = IDLE;
         } else if (stateStr == "error") {
-            claudeState = ERROR;
+            newState = ERROR;
         } else if (stateStr == "limit") {
-            if (claudeState != RATE_LIMITED) {
-                // Just entered rate limit state
-                rateLimitStartTime = millis();
-            }
-            claudeState = RATE_LIMITED;
+            newState = RATE_LIMITED;
             // Get countdown if provided (0 if not)
-            rateLimitCountdown = doc["countdown"] | 0;
+            fsm.rateLimitCountdown = doc["countdown"] | 0;
+        } else {
+            Serial.printf("[DEBUG] WARNING: Unknown state: %s\n", stateStr.c_str());
+            return;
         }
 
-        optionsUpdated = true;
+        // Transition to new state using FSM
+        transitionToState(newState);
+
+    } else if (type == "display_update") {
+        Serial.println("[DEBUG] Handler: display_update");
+        int displayNum = doc["display"] | -1;
+        String title = doc["title"] | "";
+        String content = doc["content"] | "";
+
+        Serial.printf("[DEBUG]   Display: %d, Title: %s, Content: %s\n",
+                      displayNum, title.c_str(), content.c_str());
+
+        if (displayNum >= 0 && displayNum < 4) {
+            // Mark this display as manually overridden
+            fsm.displayOverride[displayNum] = true;
+
+            // Update the specified display with title and content
+            selectDisplay(displayNum);
+            tft.fillScreen(TFT_BLACK);
+
+            // Draw title at top
+            tft.setTextSize(2);
+            tft.setTextColor(TFT_YELLOW);
+            tft.setCursor(5, 10);
+            tft.print(title);
+
+            // Draw content in center
+            tft.setTextSize(2);
+            tft.setTextColor(TFT_WHITE);
+            tft.setCursor(5, 50);
+            tft.print(content);
+
+            Serial.printf("[DEBUG]   Display %d updated successfully (override set)\n", displayNum);
+        } else {
+            Serial.printf("[DEBUG]   ERROR: Invalid display number: %d\n", displayNum);
+        }
 
     } else if (type == "image") {
+        Serial.println("[DEBUG] Handler: image");
         // Handle image data transfer
         String name = doc["name"];
         String data = doc["data"];  // Base64 encoded
@@ -654,6 +898,8 @@ void processClaudeMessage(JsonDocument& doc) {
             file.close();
             Serial.printf("Saved image: %s\n", name.c_str());
         }
+    } else {
+        Serial.printf("[DEBUG] WARNING: Unknown message type: %s\n", type.c_str());
     }
 }
 
@@ -668,22 +914,20 @@ void handleKeyPress(int key) {
     leds[key - 1] = originalColor;
     FastLED.show();
 
-    // Handle special states
-    if (claudeState == RATE_LIMITED) {
+    // Handle state-specific key presses
+    if (fsm.current == RATE_LIMITED) {
         if (key == 4) {  // Key 4 is Continue during rate limit
             sendKeyPress(key);
             // Try to resume normal state
-            claudeState = IDLE;
-            optionsUpdated = true;
+            transitionToState(IDLE);
             return;
         }
     }
 
-    if (claudeState == ERROR) {
+    if (fsm.current == ERROR) {
         if (key == 3) {  // Key 3 is Continue during error
             sendKeyPress(key);
-            claudeState = IDLE;
-            optionsUpdated = true;
+            transitionToState(IDLE);
             return;
         } else if (key == 4) {  // Key 4 is Retry during error
             sendKeyPress(key);
@@ -730,48 +974,9 @@ void sendKeyPress(int key) {
 }
 
 void updateDisplays() {
-    for (int i = 0; i < 4; i++) {
-        if (claudeState == RATE_LIMITED) {
-            // Spread rate limit info across displays for readability
-            if (i == 0) {
-                // Display 1: "RATE" text
-                drawLargeText(0, "RATE", 0xFFFF00);  // Yellow
-            } else if (i == 1) {
-                // Display 2: "LIMIT" text
-                drawLargeText(1, "LIMIT", 0xFFFF00);  // Yellow
-            } else if (i == 2) {
-                // Display 3: Big timer
-                drawRateLimitTimer();
-            } else if (i == 3) {
-                // Display 4: Continue button
-                drawTextOption(3, "Continue", 0x00FF00);  // Green
-            }
-        } else if (claudeState == ERROR) {
-            // Spread error info across displays
-            if (i == 0) {
-                // Display 1: "ERROR" text large
-                drawLargeText(0, "ERROR", 0xFF0000);  // Red
-            } else if (i == 1) {
-                // Display 2: Big pulsing !
-                drawErrorIcon();
-            } else if (i == 2) {
-                // Display 3: Continue button
-                drawTextOption(2, "Continue", 0x00FF00);  // Green
-            } else if (i == 3) {
-                // Display 4: Retry button
-                drawTextOption(3, "Retry", 0xFFA500);  // Orange
-            }
-        } else if (currentOptions[i].hasImage) {
-            // Try to load and display image
-            if (!loadImageFromSPIFFS(currentOptions[i].imagePath, i)) {
-                // Fall back to text if image fails
-                drawTextOption(i, currentOptions[i].text, currentOptions[i].color);
-            }
-        } else {
-            // Display text option
-            drawTextOption(i, currentOptions[i].text, currentOptions[i].color);
-        }
-    }
+    // DEPRECATED: This function is replaced by FSM architecture
+    // Redirecting to FSM version for compatibility
+    updateDisplaysIfNeeded();
 }
 
 bool loadImageFromSPIFFS(const String& path, uint8_t displayIndex) {
@@ -867,15 +1072,15 @@ void drawRateLimitTimer() {
     int mins, secs;
     String timeStr;
 
-    if (rateLimitCountdown > 0) {
+    if (fsm.rateLimitCountdown > 0) {
         // Countdown mode - we know when it ends
-        mins = rateLimitCountdown / 60;
-        secs = rateLimitCountdown % 60;
+        mins = fsm.rateLimitCountdown / 60;
+        secs = fsm.rateLimitCountdown % 60;
 
         tft.setTextColor(TFT_YELLOW);
     } else {
         // Elapsed time mode - duration unknown
-        unsigned long elapsed = (millis() - rateLimitStartTime) / 1000;
+        unsigned long elapsed = (millis() - fsm.rateLimitStartTime) / 1000;
         mins = elapsed / 60;
         secs = elapsed % 60;
 
@@ -899,7 +1104,7 @@ void drawRateLimitTimer() {
     // Add small label below
     tft.setTextSize(1);
     tft.setTextColor(TFT_WHITE);
-    if (rateLimitCountdown > 0) {
+    if (fsm.rateLimitCountdown > 0) {
         tft.setCursor(30, 100);
         tft.print("remaining");
     } else {
@@ -955,7 +1160,14 @@ void setLEDStatus() {
     static uint8_t pulseValue = 0;
     static int8_t pulseDirection = 1;
 
-    switch(claudeState) {
+    switch(fsm.current) {
+        case CONNECTING:
+            // Pulsing cyan while waiting for WebSocket
+            pulseValue += pulseDirection * 2;
+            if (pulseValue >= 64 || pulseValue <= 0) pulseDirection = -pulseDirection;
+            fill_solid(leds, NUM_LEDS, CRGB(0, pulseValue, pulseValue));
+            break;
+
         case IDLE:
             // Solid green when ready
             fill_solid(leds, NUM_LEDS, CRGB(0, 64, 0));

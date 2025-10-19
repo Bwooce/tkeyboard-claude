@@ -85,7 +85,11 @@ function handleKeyboardMessage(data) {
 // Send message to T-Keyboard
 function sendToKeyboard(data) {
     if (tkeyboardClient && tkeyboardClient.readyState === WebSocket.OPEN) {
-        tkeyboardClient.send(JSON.stringify(data));
+        const message = JSON.stringify(data);
+        console.log(`→ To keyboard: ${message.substring(0, 200)}${message.length > 200 ? '...' : ''}`);
+        tkeyboardClient.send(message);
+    } else {
+        console.log(`✗ Cannot send to keyboard (not connected): ${JSON.stringify(data).substring(0, 100)}`);
     }
 }
 
