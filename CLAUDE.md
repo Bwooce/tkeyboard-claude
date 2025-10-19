@@ -121,21 +121,26 @@ tkeyboard-claude/
 
 ## Starting the T-Keyboard Agent
 
-**IMPORTANT:** When working on this project, use the Task tool to launch a background agent that manages the T-Keyboard.
+**IMPORTANT:** This project includes a custom subagent definition that manages the T-Keyboard automatically.
 
 ### How to Start the Agent
 
-Use the Task tool with the `general-purpose` subagent type and the prompt from `AGENT_PROMPT.md`:
+The `tkeyboard-manager` subagent is defined in `.claude/agents/tkeyboard-manager.md` and will be available automatically when working in this project.
 
+**To launch it, simply say:**
 ```
-Read AGENT_PROMPT.md and launch a general-purpose agent with those instructions.
-The agent should:
-- Monitor the bridge server at http://localhost:8081
-- Poll /inputs every 2 seconds
-- Update keyboard buttons based on context
-- Auto-terminate if this main session dies
-- Run silently to minimize token usage
+Start the tkeyboard-manager agent
 ```
+
+Or use the Task tool directly:
+```
+Use the tkeyboard-manager subagent to monitor the keyboard system
+```
+
+The agent is configured with:
+- **Model:** Haiku (fast, token-efficient)
+- **Tools:** Bash, Read, Grep
+- **Description:** Proactively used when working on this project
 
 ### Agent Responsibilities
 
