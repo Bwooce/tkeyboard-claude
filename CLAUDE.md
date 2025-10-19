@@ -125,22 +125,27 @@ tkeyboard-claude/
 
 ### How to Start the Agent
 
-The `tkeyboard-manager` subagent is defined in `.claude/agents/tkeyboard-manager.md` and will be available automatically when working in this project.
+The `tkeyboard-manager` subagent is defined in `.claude/agents/tkeyboard-manager.md` and is automatically available when working in this project directory.
 
-**To launch it, simply say:**
+**To launch it:**
 ```
-Start the tkeyboard-manager agent
+Use the tkeyboard-manager subagent to start monitoring
 ```
 
-Or use the Task tool directly:
-```
-Use the tkeyboard-manager subagent to monitor the keyboard system
-```
+**Note:** Custom subagents cannot be invoked directly via the Task tool's `subagent_type` parameter. Instead, use a general-purpose agent and request it to use the custom subagent via natural language.
+
+**What the agent does:**
+1. Creates `bridge-server/monitor.sh` - a monitoring script
+2. Runs the script in background (completely silent operation)
+3. Monitors session health every 2 seconds
+4. Auto-terminates if main session dies or session ID changes
+5. Restarts bridge server if it crashes (doesn't die)
 
 The agent is configured with:
-- **Model:** Haiku (fast, token-efficient)
-- **Tools:** Bash, Read, Grep
-- **Description:** Proactively used when working on this project
+- **Model:** Haiku (fast, token-efficient for background tasks)
+- **Tools:** Bash, Read, Grep (restricted to necessary tools only)
+- **Description:** Proactively monitors T-Keyboard system
+- **Token efficiency:** Runs silently - zero token waste during monitoring
 
 ### Agent Responsibilities
 

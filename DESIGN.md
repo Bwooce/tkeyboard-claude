@@ -2,7 +2,30 @@
 
 ## Overview
 
-The T-Keyboard integrates with Claude Code using a **session-bound architecture** that ensures safe multi-window operation. Each Claude session gets its own unique session ID, bridge server instance, and stop daemon that can interrupt only that specific session.
+The T-Keyboard integrates with Claude Code using a **session-bound architecture** with a **custom subagent** that ensures safe multi-window operation. Each Claude session gets its own unique session ID, bridge server instance, and monitoring daemon that can interrupt only that specific session.
+
+## Subagent Architecture
+
+The system uses a **custom Claude Code subagent** defined in `.claude/agents/tkeyboard-manager.md`:
+
+- **Name:** `tkeyboard-manager`
+- **Model:** Haiku (token-efficient for background monitoring)
+- **Tools:** Bash, Read, Grep (restricted to necessary tools)
+- **Invocation:** Via general-purpose agent using natural language
+
+**Key Features:**
+- Automatically available when working in this project directory
+- Creates and runs `bridge-server/monitor.sh` for health monitoring
+- Operates completely silently (zero token waste)
+- Auto-terminates if main Claude session dies or session ID changes
+- Restarts bridge server if it crashes (resilient supervisor)
+
+**Why Subagent vs Manual Script:**
+- Version controlled (team can share same agent)
+- Automatically available (no manual startup required)
+- Self-documenting (agent definition includes all logic)
+- Token efficient (Haiku model, silent operation)
+- Safe (restricted tool access, session-bound)
 
 ## Architecture
 

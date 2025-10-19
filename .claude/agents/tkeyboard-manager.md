@@ -30,7 +30,15 @@ Run ALL commands silently to minimize token usage:
    INITIAL_CLAUDE_PID=$(curl -s http://localhost:8081/status 2>/dev/null | jq -r '.claudePid')
    ```
 
-3. Report ONCE: "Monitoring session $INITIAL_SESSION_ID (PID $INITIAL_CLAUDE_PID)"
+3. Set default buttons on keyboard:
+   ```bash
+   curl -s -X POST http://localhost:8081/update \
+     -H 'Content-Type: application/json' \
+     -d '{"buttons":["Yes","No","Proceed","Help"],"actions":["Yes","No","Proceed","Help"],"images":["yes.rgb","no.rgb","proceed.rgb","help.rgb"]}' \
+     > /dev/null 2>&1
+   ```
+
+4. Report ONCE: "Monitoring session $INITIAL_SESSION_ID (PID $INITIAL_CLAUDE_PID) - Default buttons set"
 
 ## Health Monitoring Loop (Every 2 Seconds)
 
