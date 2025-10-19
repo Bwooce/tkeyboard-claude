@@ -19,15 +19,36 @@ Run ALL commands silently to minimize token usage:
 
 ## Initial Setup
 
-1. Check bridge server status:
+1. Detect the actual Claude Code session PID:
    ```bash
-   curl -s http://localhost:8081/status 2>/dev/null
+   # Find the main claude process (not helpers or plugins)
+   CLAUDE_PID=$(ps aux | grep -E "^\s*$USER\s+[0-9]+.*\s+claude\s*$" | grep -v grep | awk '{print $2}' | head -1)
+
+   if [ -z "$CLAUDE_PID" ]; then
+       echo "⚠️ Could not detect Claude PID - exiting"
+       exit 1
+   fi
    ```
 
-2. Store session info:
+2. Check if bridge server is running, start if needed:
+   ```bash
+   if ! curl -s http://localhost:8081/status > /dev/null 2>&1; then
+       echo "Starting bridge server with CLAUDE_PID=$CLAUDE_PID"
+       cd bridge-server
+       CLAUDE_PID=$CLAUDE_PID CLAUDE_SESSION_ID="tk-$(date +%s)-$CLAUDE_PID" node agent-bridge.js > /tmp/bridge-server.log 2>&1 &
+       sleep 2
+   fi
+   ```
+
+3. Store session info:
    ```bash
    INITIAL_SESSION_ID=$(curl -s http://localhost:8081/status 2>/dev/null | jq -r '.sessionId')
    INITIAL_CLAUDE_PID=$(curl -s http://localhost:8081/status 2>/dev/null | jq -r '.claudePid')
+
+   # Verify we got the right PID
+   if [ "$INITIAL_CLAUDE_PID" != "$CLAUDE_PID" ]; then
+       echo "⚠️ Warning: Bridge tracking PID $INITIAL_CLAUDE_PID but actual Claude is PID $CLAUDE_PID"
+   fi
    ```
 
 3. Set default buttons on keyboard:
