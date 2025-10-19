@@ -454,10 +454,10 @@ POST /update
 ```
 
 **BACKGROUND Button Behavior:**
-- Sends a special marker that Claude recognizes as "continue in background"
-- OR: Simply doesn't send anything, allowing tools to continue
+- Sends Ctrl+B (key code 11) to background Claude and continue tools
 - User can switch to another window/task while Claude works
 - PostToolUse hook still fires when tools complete, restoring default buttons
+- Input daemon needs to recognize "BACKGROUND" action and send Ctrl+B via AppleScript
 
 **Benefits:**
 - Non-destructive alternative to STOP
@@ -468,10 +468,39 @@ POST /update
 **Implementation:**
 - Update PreToolUse hook to show [STOP, BACKGROUND, "", ""]
 - Generate background.rgb image (⏸️ or similar icon)
-- Input daemon recognizes "BACKGROUND" action (currently does nothing special)
+- Update input daemon to recognize "BACKGROUND" action and send Ctrl+B:
+  ```bash
+  osascript -e 'tell application "System Events" to keystroke "b" using control down'
+  ```
 - Consider adding notification when backgrounded task completes
 
-#### 1. Claude TUI Prompt Detection
+**Status:** TODO - Not yet implemented
+
+#### 1. Expand Subagent with AGENT_PROMPT.md Content
+**Goal:** Port additional context-aware button examples and logic from AGENT_PROMPT.md into the subagent
+
+**Current State:**
+- Subagent (`.claude/agents/tkeyboard-manager.md`) handles basic setup and health monitoring
+- AGENT_PROMPT.md contains more detailed examples of context-aware button updates
+- Need to merge the best parts of AGENT_PROMPT.md into the subagent definition
+
+**Content to Port:**
+- Context-aware button suggestions based on conversation state
+- Image generation examples and instructions
+- Rate limit detection and handling
+- Button update examples for different scenarios
+- Error state handling
+- Multi-step task detection
+
+**Benefits:**
+- Single source of truth (subagent becomes canonical)
+- Better context awareness (buttons change based on what Claude is doing)
+- Can eventually deprecate AGENT_PROMPT.md
+- Richer functionality without manual intervention
+
+**Status:** TODO - AGENT_PROMPT.md still exists with additional content not in subagent
+
+#### 2. Claude TUI Prompt Detection
 **Goal:** Automatically detect and handle Claude's standard confirmation prompts
 
 Common Claude prompts to detect:
@@ -509,7 +538,7 @@ if (lastClaudeOutput.match(CLAUDE_PROMPTS.yesAlwaysNo)) {
 - Consistent UX - buttons always match expected inputs
 - Visual feedback - images clearly show options
 
-#### 2. Image Preference Strategy
+#### 3. Image Preference Strategy
 **Goal:** Use images by default where they provide clear visual recognition benefits
 
 **When to Use Images:**
@@ -552,7 +581,7 @@ node generate-images.js --text "Y" --emoji "✅" --name yes_alt
 - If emoji not supported → use text abbreviation
 - Always provide `action` text alongside image for accessibility
 
-#### 3. Display vs Action Text Separation
+#### 4. Display vs Action Text Separation
 **Goal:** Support images or short labels with detailed action text
 
 **⚠️ CRITICAL: Action Text Behavior**
@@ -610,7 +639,7 @@ POST /update
 - Accessibility (screen readers use action text)
 - Flexibility (same icon, different actions)
 
-#### 4. Context-Aware Button Updates
+#### 5. Context-Aware Button Updates
 **Goal:** Automatically suggest relevant buttons based on conversation state
 
 **Context Detection:**
@@ -656,30 +685,30 @@ const contextButtons = {
 };
 ```
 
-#### 5. State Synchronization
+#### 6. State Synchronization
 - ❌ Rate limit state not automatically detected (bridge monitors agent polling)
 - ❌ Error state not propagated to keyboard automatically
 - ❌ No "task complete" notification with success/failure summary
 
-#### 6. Advanced Interrupt Handling
-- ✅ Ctrl+C to TTY (implemented)
-- ❌ SIGINT fallback (if Ctrl+C insufficient)
+#### 7. Advanced Interrupt Handling
+- ✅ Esc via AppleScript (STOP button - implemented)
+- ❌ Ctrl+B via AppleScript (BACKGROUND button - not yet implemented)
 - ❌ Graceful task cancellation (save progress before stopping)
 - ❌ Resume after interrupt (restore state and continue)
 
-#### 7. Multi-Session Management
+#### 8. Multi-Session Management
 - ❌ Session discovery (list active sessions)
 - ❌ Session switching on keyboard (select active Claude window)
 - ❌ Session persistence across restarts
 - ❌ Multiple bridge servers on different ports
 
-#### 8. ESP32 Session Awareness
+#### 9. ESP32 Session Awareness
 - ❌ ESP32 doesn't store session ID (only bridge knows)
 - ❌ No session mismatch detection on keyboard
 - ❌ No visual feedback for session binding status
 - ❌ No "reconnecting to session..." state
 
-#### 9. Testing & Debugging
+#### 10. Testing & Debugging
 - ✅ `/test/button` endpoint for simulation
 - ❌ No integration tests for session binding
 - ❌ No error recovery tests (network loss, daemon crash, etc.)
