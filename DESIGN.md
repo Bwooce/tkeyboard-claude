@@ -2,7 +2,13 @@
 
 ## Overview
 
-The T-Keyboard integrates with Claude Code using a **session-bound architecture** with a **custom subagent** that ensures safe multi-window operation. Each Claude session gets its own unique session ID, bridge server instance, and monitoring daemon that can interrupt only that specific session.
+The T-Keyboard integrates with Claude Code using a **subagent + hooks architecture**:
+- **Subagent** (`tkeyboard-manager`) handles health monitoring and input daemon management
+- **Hooks** (PreToolUse/PostToolUse) automatically manage visual state (STOP button during tool execution)
+- **Input Daemon** polls for button presses and injects them via AppleScript
+- **AppleScript** simulates actual keypresses (works with TUI apps in raw mode)
+
+Each Claude session gets its own unique session ID and monitoring system that auto-terminates when the session ends.
 
 ## Subagent Architecture
 
@@ -16,9 +22,11 @@ The system uses a **custom Claude Code subagent** defined in `.claude/agents/tke
 **Key Features:**
 - Automatically available when working in this project directory
 - Creates and runs `bridge-server/monitor.sh` for health monitoring
+- Starts `installation/tkeyboard-input-daemon.sh` for button press handling
 - Operates completely silently (zero token waste)
 - Auto-terminates if main Claude session dies or session ID changes
 - Restarts bridge server if it crashes (resilient supervisor)
+- Cleans up input daemon when terminating
 
 **Why Subagent vs Manual Script:**
 - Version controlled (team can share same agent)
@@ -32,57 +40,66 @@ The system uses a **custom Claude Code subagent** defined in `.claude/agents/tke
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
 │                        Claude Code Session                            │
-│                   (PID: 24429, TTY: /dev/ttys005)                    │
+│                         (PID: 2069)                                  │
 │                                                                       │
 │  ┌─────────────────────────────────────────────────────────────────┐│
-│  │  Terminal (receives injected text)                              ││
-│  │  > Yes<CR>         ← injected by daemon                         ││
-│  │  > Continue<CR>    ← injected by daemon                         ││
-│  │  > ^C              ← Ctrl+C for STOP button                     ││
+│  │  Claude Code Hooks                                              ││
+│  │  PreToolUse  → Show STOP button                                ││
+│  │  PostToolUse → Show default buttons (Yes/No/Proceed/Help)      ││
+│  └─────────────────────────────────────────────────────────────────┘│
+│                                                                       │
+│  ┌─────────────────────────────────────────────────────────────────┐│
+│  │  Terminal (receives AppleScript keypresses)                     ││
+│  │  > Yes<CR>         ← AppleScript injection                      ││
+│  │  > Proceed<CR>     ← AppleScript injection                      ││
+│  │  > <Esc>           ← STOP button (stops generation)             ││
 │  └─────────────────────────────────────────────────────────────────┘│
 └───────────────────────────────┬───────────────────────────────────────┘
                                 │
-                                │ starts with unique SESSION_ID
+                                │ tkeyboard-manager subagent starts:
                                 ↓
                   ┌─────────────────────────────┐
-                  │  Agent Startup Script       │
-                  │  ~/.claude/tkeyboard-       │
-                  │     agent-start.sh          │
+                  │  Subagent (Haiku)           │
+                  │  .claude/agents/            │
+                  │   tkeyboard-manager.md      │
                   └──────┬──────────────┬───────┘
                          │              │
             ┌────────────┘              └────────────┐
             ↓                                        ↓
   ┌───────────────────┐                  ┌──────────────────────────┐
-  │  Bridge Server    │                  │   Input Daemon           │
-  │  (Node.js)        │◄─────polls──────│  (Bash)                  │
-  │  Port 8080/8081   │   100ms          │                          │
-  │                   │                  │  For each button press:  │
-  │  • WebSocket      │                  │  • STOP → Ctrl+C to TTY  │
-  │  • HTTP API       │                  │  • Other → Text+CR to TTY│
-  │  • Input queue    │                  │                          │
-  │  • Session ID     │                  │  Session validation:     │
-  └────────┬──────────┘                  │  • Matches SESSION_ID    │
-           │                             │  • Claude PID alive      │
-           │ WebSocket (port 8080)       └──────────────────────────┘
-           │                                        ↓
-           ↓                                 Writes to TTY:
-  ┌────────────────────┐                    echo -n "Yes" > /dev/ttys005
-  │  T-Keyboard ESP32  │                    echo -ne "\015" > /dev/ttys005
-  │                    │                    (CR = carriage return = Enter)
-  │  ┌───┐ ┌───┐      │
-  │  │Yes│ │ No│      │
-  │  └───┘ └───┘      │
-  │  ┌───┐ ┌───┐      │
-  │  │Con│ │Hlp│      │
-  │  └───┘ └───┘      │
-  │                    │
+  │  Monitor Script   │                  │   Input Daemon           │
+  │  (monitor.sh)     │                  │  (Bash)                  │
+  │                   │                  │                          │
+  │  • Health checks  │                  │  For each button press:  │
+  │  • 2s interval    │                  │  • STOP → Esc via        │
+  │  • Auto-terminate │                  │    AppleScript           │
+  │  • Restart bridge │                  │  • Other → Text+Enter    │
+  └───────────────────┘                  │    via AppleScript       │
+                                         │                          │
+                                         │  Session validation:     │
+                                         │  • Matches SESSION_ID    │
+                                         │  • Claude PID alive      │
+                                         └─────────┬────────────────┘
+                                                   │
+                                                   │ polls every 100ms
+                                                   ↓
+  ┌────────────────────┐                  ┌───────────────────┐
+  │  T-Keyboard ESP32  │──WebSocket──────>│  Bridge Server    │
+  │                    │   port 8080       │  (Node.js)        │
+  │  ┌───┐ ┌───┐      │                  │  Port 8080/8081   │
+  │  │Yes│ │ No│      │                  │                   │
+  │  └───┘ └───┘      │                  │  • WebSocket      │
+  │  ┌───┐ ┌───┐      │                  │  • HTTP API       │
+  │  │Pro│ │Hlp│      │                  │  • Input queue    │
+  │  └───┘ └───┘      │                  │  • Session ID     │
+  │                    │                  └───────────────────┘
   │  User presses "Yes"│
-  │  ↓                 │
-  │  WebSocket msg:    │
-  │  {type:"key_press",│
-  │   key:1,           │
-  │   text:"Yes"}      │
-  └────────────────────┘
+  │  ↓                 │                  AppleScript injection:
+  │  WebSocket msg:    │                  osascript -e 'tell application
+  │  {type:"key_press",│                   "System Events" to keystroke "Yes"'
+  │   key:1,           │                  osascript -e 'tell application
+  │   text:"Yes"}      │                   "System Events" to key code 36'
+  └────────────────────┘                  (36 = Enter key)
 ```
 
 ### Data Flow for Button Press
@@ -96,13 +113,13 @@ The system uses a **custom Claude Code subagent** defined in `.claude/agents/tke
          ↓
 4. Input daemon polls (100ms): GET /inputs
          ↓
-5. Daemon validates SESSION_ID matches
+5. Daemon validates SESSION_ID matches and Claude PID is alive
          ↓
-6. Daemon injects to TTY:
-   echo -n "Yes" > /dev/ttys005    (the text)
-   echo -ne "\015" > /dev/ttys005   (Enter key)
+6. Daemon injects via AppleScript:
+   osascript -e 'tell application "System Events" to keystroke "Yes"'
+   osascript -e 'tell application "System Events" to key code 36'
          ↓
-7. Claude terminal receives: "Yes<CR>"
+7. Claude terminal receives actual keypresses: "Yes<Enter>"
          ↓
 8. Claude processes as if user typed "Yes" and pressed Enter
          ↓
@@ -368,40 +385,91 @@ These hooks are optional and only affect keyboard display, not functionality.
 3. Bridge queues with session ID
 4. Input daemon polls (100ms interval)
 5. Daemon validates: sessionId matches? ✓
-6. Daemon sends: echo -ne "\003" > /dev/ttys005
-7. Claude receives Ctrl+C interrupt
-8. Current tool execution completes, then stops
+6. Daemon sends Esc via AppleScript:
+   osascript -e 'tell application "System Events" to key code 53'
+7. Claude receives Esc keypress (stops generation)
+8. Current tool execution may complete, then Claude stops
 ```
 
 ## Implementation Status
 
 ### ✅ Completed
 
-1. **Session-Bound Architecture**
-   - Unique session IDs per Claude instance
-   - TTY auto-detection
-   - Process lifecycle management
+1. **Subagent Architecture**
+   - Custom tkeyboard-manager subagent defined in `.claude/agents/`
+   - Automatic Claude PID detection (finds actual process, not helpers)
+   - Auto-launches monitor script and input daemon
+   - Auto-terminates when main session dies (verified working)
+   - Restarts bridge server if it crashes
+   - Token-efficient (Haiku model, silent operation)
 
-2. **Bridge Server Session Support**
+2. **Hooks System (Working)**
+   - PreToolUse hook: Shows STOP button automatically before tool execution
+   - PostToolUse hook: Restores default buttons (Yes/No/Proceed/Help) after completion
+   - Hooks registered via `/hooks` TUI with matcher pattern `.*`
+   - Configuration stored in `.claude/settings.json`
+   - Real-time visual feedback of Claude's state
+
+3. **AppleScript Injection (Working)**
+   - Input daemon uses AppleScript to simulate actual keypresses
+   - Works with TUI apps in raw mode (unlike TIOCSTI)
+   - No TTY required, no setuid needed
+   - Requires Accessibility permissions for Terminal.app
+   - STOP button sends Esc (key code 53) to stop generation
+   - Normal buttons send text + Enter (key code 36)
+
+4. **Input Daemon**
+   - Polls bridge server every 100ms for button presses
+   - Session validation (SESSION_ID and Claude PID checks)
+   - Auto-terminates when Claude process dies
+   - Handles STOP button (Esc) and normal buttons (text+Enter) separately
+   - Started automatically by subagent
+
+5. **Bridge Server Session Support**
    - Session metadata in all API responses
-   - `/session/verify` endpoint
-   - `/test/button` for testing
-
-3. **Stop Daemon**
-   - Session validation
-   - Ctrl+C injection to specific TTY
-   - Auto-cleanup on process death
-
-4. **Agent Startup Script**
-   - Auto-detection of Claude PID and TTY
-   - Orchestrated startup of all components
-   - Cleanup trap on exit
-
-5. **Thinking State Hooks** (Optional)
-   - Pre-tool-call hook (show STOP button)
-   - Post-tool-call hook (restore default buttons)
+   - `/inputs` endpoint for polling queued button presses
+   - `/update` endpoint for changing button display
+   - `/status` endpoint for health checks
+   - Tracks Claude PID and session ID
 
 ### 🚧 TODO - Planned Features
+
+#### 0. BACKGROUND Button During Tool Execution
+**Goal:** Add a BACKGROUND button alongside STOP when tools are running
+
+**Problem:**
+- Currently during tool execution, only STOP button is shown
+- STOP terminates the tool execution (sends Esc)
+- No way to "background" Claude and let tools continue while user does other work
+
+**Proposed Solution:**
+```javascript
+// PreToolUse hook shows both STOP and BACKGROUND
+POST /update
+{
+  "buttons": ["STOP", "BACKGROUND", "", ""],
+  "actions": ["STOP", "BACKGROUND", "", ""],
+  "images": ["stop.rgb", "background.rgb", "", ""]
+}
+```
+
+**BACKGROUND Button Behavior:**
+- Sends a special marker that Claude recognizes as "continue in background"
+- OR: Simply doesn't send anything, allowing tools to continue
+- User can switch to another window/task while Claude works
+- PostToolUse hook still fires when tools complete, restoring default buttons
+
+**Benefits:**
+- Non-destructive alternative to STOP
+- Allows long-running tasks to continue unattended
+- User can multitask while Claude processes
+- Still provides visual feedback when complete
+
+**Implementation:**
+- Update PreToolUse hook to show [STOP, BACKGROUND, "", ""]
+- Generate background.rgb image (⏸️ or similar icon)
+- Input daemon recognizes "BACKGROUND" action (currently does nothing special)
+- Consider adding notification when backgrounded task completes
 
 #### 1. Claude TUI Prompt Detection
 **Goal:** Automatically detect and handle Claude's standard confirmation prompts
