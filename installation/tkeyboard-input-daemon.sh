@@ -64,6 +64,18 @@ while true; do
                         fi
 
                         sleep 1  # Cooldown after interrupt
+                    elif [ "$BUTTON_TEXT" == "BACKGROUND" ]; then
+                        # BACKGROUND button - send Ctrl+B WITHOUT Enter
+                        echo "[Input Daemon] BACKGROUND button pressed! Sending Ctrl+B"
+                        osascript -e 'tell application "System Events" to keystroke "b" using control down' > /dev/null 2>&1
+
+                        if [ $? -eq 0 ]; then
+                            echo "[Input Daemon] Ctrl+B sent successfully"
+                        else
+                            echo "[Input Daemon] ERROR: Failed to send Ctrl+B"
+                        fi
+
+                        sleep 1  # Cooldown after control sequence
                     else
                         # Normal button - inject text + Enter using AppleScript
                         echo "[Input Daemon] Button $BUTTON_KEY pressed: '$BUTTON_TEXT' - Injecting via AppleScript"
