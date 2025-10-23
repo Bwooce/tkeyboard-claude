@@ -474,7 +474,41 @@ POST /update
   ```
 - Consider adding notification when backgrounded task completes
 
-**Status:** TODO - Not yet implemented
+**Status:** ✅ COMPLETED - Implemented with Ctrl+B via AppleScript
+
+---
+
+#### 0b. Dynamic Image Generation
+**Goal:** Allow agent to generate custom icons on-demand for context-aware buttons
+
+**Implementation:**
+- Added POST `/generate-image` endpoint to bridge server
+- Takes `emoji` and/or `text` parameters
+- Generates hash-based filenames (MD5 of parameters) for automatic caching
+- Same parameters always generate same filename (cache-friendly)
+- Returns `{success, filename, cached}` JSON response
+
+**Usage Example:**
+```bash
+# Agent generates commit icon
+curl -X POST http://localhost:8081/generate-image \
+  -d '{"emoji":"💾"}'
+→ {"success":true,"filename":"a2fc31d8.rgb","cached":false}
+
+# Agent updates keyboard
+curl -X POST http://localhost:8081/update \
+  -d '{"buttons":["Commit","Push","Skip","Help"],"images":["a2fc31d8.rgb","...","","help.rgb"]}'
+```
+
+**Benefits:**
+- Agent can create icons for any context (git, debug, tests, errors, etc.)
+- No need to pre-generate all possible icons
+- Automatic caching prevents regeneration
+- ESP32 downloads via existing GET `/images/{filename}` endpoint
+
+**Status:** ✅ COMPLETED - Working with caching
+
+---
 
 #### 1. Expand Subagent with AGENT_PROMPT.md Content
 **Goal:** Port additional context-aware button examples and logic from AGENT_PROMPT.md into the subagent
