@@ -1,39 +1,56 @@
-# T-Keyboard Session-Bound Integration Design
+# T-Keyboard MCP Integration Design
+
+> **Note:** This document describes the MCP-based architecture (current). The previous bash script + subagent approach has been replaced with MCP server + button-advisor for better integration and dynamic button generation.
 
 ## Overview
 
-The T-Keyboard integrates with Claude Code using a **subagent + hooks architecture**:
-- **Subagent** (`tkeyboard-manager`) handles health monitoring and input daemon management
+The T-Keyboard integrates with Claude Code using an **MCP server + AI button advisor architecture**:
+- **MCP Server** exposes tools for keyboard context management, runs WebSocket server for ESP32
+- **Button Advisor** (AI subagent) analyzes context and determines optimal buttons dynamically
 - **Hooks** (PreToolUse/PostToolUse) automatically manage visual state (STOP button during tool execution)
-- **Input Daemon** polls for button presses and injects them via AppleScript
-- **AppleScript** simulates actual keypresses (works with TUI apps in raw mode)
+- **Input Daemon** polls for button presses and injects them via AppleScript (essential for blocked input)
+- **AppleScript** simulates actual keypresses (works when main conversation is blocked)
 
-Each Claude session gets its own unique session ID and monitoring system that auto-terminates when the session ends.
+Main conversation uses MCP tools to update keyboard context. MCP server launches button-advisor subagent for AI-powered button recommendations.
 
-## Subagent Architecture
+## MCP Server Architecture
 
-The system uses a **custom Claude Code subagent** defined in `.claude/agents/tkeyboard-manager.md`:
+The system uses an **MCP (Model Context Protocol) server** in `mcp-server/`:
 
-- **Name:** `tkeyboard-manager`
-- **Model:** Haiku (token-efficient for background monitoring)
-- **Tools:** Bash, Read, Grep (restricted to necessary tools)
-- **Invocation:** Via general-purpose agent using natural language
+- **Type:** Persistent Node.js process (TypeScript compiled)
+- **Communication:** stdio transport for MCP, WebSocket for ESP32, HTTP for input daemon
+- **Tools Exposed:** update_keyboard_context, set_keyboard_buttons, get_keyboard_status
+- **Resources Exposed:** tkeyboard://status, tkeyboard://context
+- **Port 8080:** WebSocket server for ESP32
+- **Port 8081:** HTTP API for input daemon compatibility
 
 **Key Features:**
-- Automatically available when working in this project directory
-- Creates and runs `bridge-server/monitor.sh` for health monitoring
-- Starts `installation/tkeyboard-input-daemon.sh` for button press handling
-- Operates completely silently (zero token waste)
-- Auto-terminates if main Claude session dies or session ID changes
-- Restarts bridge server if it crashes (resilient supervisor)
-- Cleans up input daemon when terminating
+- Tools automatically available in Claude Code when MCP server is configured
+- Main conversation calls tools natively (discoverable in tool list)
+- Launches button-advisor subagent for dynamic button determination
+- Generates icons on-demand using existing generate-images.js
+- Maintains WebSocket connection to ESP32
+- Provides HTTP endpoints for input daemon compatibility
+- Type-safe tool parameters with schema validation
 
-**Why Subagent vs Manual Script:**
-- Version controlled (team can share same agent)
-- Automatically available (no manual startup required)
-- Self-documenting (agent definition includes all logic)
-- Token efficient (Haiku model, silent operation)
-- Safe (restricted tool access, session-bound)
+**Why MCP vs Bash Scripts:**
+- Native tool integration (not curl commands)
+- Type-safe parameters with validation
+- Standardized protocol (MCP SDK)
+- Single persistent process (no bash script proliferation)
+- Cleaner error handling (tool responses)
+- Better debugging (MCP inspector compatible)
+
+## Button Advisor Subagent
+
+The MCP server launches the **button-advisor** subagent (`.claude/agents/button-advisor.md`) for dynamic button decisions:
+
+- **Model:** Haiku (cheap and fast)
+- **Tools:** Read, Grep (for context analysis)
+- **Input:** Context type + detail from main conversation
+- **Output:** JSON with buttons, emojis, and reasoning
+
+The advisor analyzes the specific situation and recommends appropriate buttons, not hardcoded mappings.
 
 ## Architecture
 

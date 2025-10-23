@@ -1,12 +1,40 @@
 # T-Keyboard-S3 Claude Code Controller - Technical Context
 
-## Architecture: Agent + Hooks
+## T-Keyboard Context Management - REQUIRED
 
-This project uses a **Claude agent** for monitoring inputs and **hooks** for visual state management.
+**CRITICAL:** This project has an MCP server (tkeyboard) that manages the T-Keyboard hardware.
+
+### You MUST Proactively Update Keyboard Context
+
+After any significant event or before showing prompts to the user, you MUST call the MCP tool `update_keyboard_context`.
+
+**When to update:**
+- After git operations → context="git_operations"
+- After detecting errors → context="debugging"
+- Running tests → context="testing"
+- Before Yes/No questions → context="question_yesno"
+- Before multiple choice → context="question_choice"
+- File operations → context="file_operations"
+- Default/unclear → context="default"
+
+**Timing is CRITICAL:**
+- Update keyboard BEFORE finishing your response
+- Buttons must be ready when user sees the prompt
+- Include specific details in the "detail" parameter
+
+**This is not optional** - keyboard UX depends on these updates.
+
+## Architecture: MCP + Hooks
+
+This project uses an **MCP server** for keyboard management and **hooks** for thinking state.
 
 ### The Flow
 ```
-Button Press:  T-Keyboard → Bridge → Agent polls → Immediate Response
+Main Conversation → MCP Tools → MCP Server → Button Advisor (AI) → ESP32
+                                     ↓
+                             Input queue for daemon
+                                     ↑
+Button Press: T-Keyboard → MCP Server → Input Daemon → AppleScript → Terminal
 Thinking State: PreToolUse hook → STOP button → PostToolUse hook → Default buttons
 ```
 
@@ -19,18 +47,25 @@ Thinking State: PreToolUse hook → STOP button → PostToolUse hook → Default
 - RGB LEDs for status (GPIO 11)
 - SPIFFS for image caching (~13MB partition)
 
-### 2. Bridge Server (`bridge-server/agent-bridge.js`)
-- Simple WebSocket server on port 8080
-- HTTP API on port 8081 for agent
-- Queues keyboard inputs
-- No complex state management
+### 2. MCP Server (`mcp-server/`)
+- WebSocket server on port 8080 for ESP32 connection
+- HTTP API on port 8081 for input daemon compatibility
+- Exposes MCP tools for keyboard context management
+- Launches button-advisor subagent for dynamic button decisions
+- Generates icons on-demand using existing generate-images.js
+- Queues keyboard inputs for input daemon
 
-### 3. Claude Agent (runs in Claude Code via Task tool)
-- Polls `/inputs` every 2 seconds
-- Monitors main session health (auto-terminates if session dies)
-- Updates display based on context
-- Can restart bridge server if it crashes
-- Runs silently to minimize token usage
+### 3. Button Advisor Subagent (`.claude/agents/button-advisor.md`)
+- Haiku-powered AI that analyzes context
+- Determines optimal buttons for each situation
+- Returns button labels, emojis, and reasoning
+- Cheap and fast (token-efficient)
+
+### 4. Input Daemon (`installation/tkeyboard-input-daemon.sh`)
+- **ESSENTIAL** for injecting input when main conversation is blocked
+- Polls MCP server's `/inputs` endpoint every 100ms
+- Uses AppleScript to inject keypresses into terminal
+- Handles STOP (Esc), BACKGROUND (Ctrl+B), and text buttons
 
 ## Hardware Details
 
@@ -57,14 +92,22 @@ Thinking State: PreToolUse hook → STOP button → PostToolUse hook → Default
 - Size 1 text is too small and nearly unreadable
 - Use size 2 for labels, size 3-4 for primary content
 
-## Agent Capabilities
+## MCP Tools Available
 
-The Claude agent can:
-- Start the bridge server via Bash
-- Monitor for inputs without blocking
-- Generate custom images dynamically
-- Detect conversation context
-- Update button options in real-time
+The main conversation can use these MCP tools:
+
+**`update_keyboard_context(context, detail?)`**
+- Updates keyboard buttons based on work context
+- Launches button-advisor subagent for AI-powered recommendations
+- Generates icons dynamically as needed
+- Context types: git_operations, debugging, testing, question_yesno, question_choice, file_operations, default
+
+**`set_keyboard_buttons(buttons, actions?, images?)`**
+- Directly set specific buttons (bypass AI advisor)
+- Use for explicit control when needed
+
+**`get_keyboard_status()`**
+- Query keyboard connection and current button state
 
 ## Serial Configuration
 
@@ -111,49 +154,44 @@ curl http://localhost:8081/inputs
 ## File Structure
 ```
 tkeyboard-claude/
-├── arduino/TKeyboardClaude/  # ESP32 firmware
-├── bridge-server/             # Node.js bridge
-│   ├── agent-bridge.js        # Main server
-│   └── generate-images.js     # Icon generator
-├── images/                    # Generated icons
-├── AGENT_PROMPT.md           # Ready-to-use agent
-└── README.md                 # User documentation
+├── arduino/TKeyboardClaude/       # ESP32 firmware
+├── mcp-server/                    # MCP server (NEW)
+│   ├── src/
+│   │   ├── tkeyboard-server.ts    # Main MCP server
+│   │   └── icon-generator.ts      # Icon generation wrapper
+│   └── package.json
+├── .claude/agents/
+│   └── button-advisor.md          # AI button advisor subagent
+├── installation/
+│   └── tkeyboard-input-daemon.sh  # AppleScript input injection
+├── bridge-server/
+│   └── generate-images.js         # Icon generator (used by MCP)
+├── images/cache/                  # Generated icon cache
+└── README.md                      # User documentation
 ```
 
-## Starting the T-Keyboard Agent
+## Starting the T-Keyboard MCP Server
 
-**IMPORTANT:** This project includes a custom subagent definition that manages the T-Keyboard automatically.
+The MCP server must be running for keyboard functionality.
 
-### How to Start the Agent
-
-The `tkeyboard-manager` subagent is defined in `.claude/agents/tkeyboard-manager.md` and is automatically available when working in this project directory.
-
-**To launch it:**
+### Manual Start (for testing):
+```bash
+cd mcp-server
+npm install  # First time only
+npm run build  # Compile TypeScript
+npm start  # Start MCP server
 ```
-Use the tkeyboard-manager subagent to start monitoring
+
+### Setup in Claude Code:
+The MCP server should be configured in Claude Code's MCP settings. Once configured, the tkeyboard tools will be automatically available in all conversations.
+
+**Input Daemon:**
+The input daemon must also be running to inject button presses:
+```bash
+bash installation/tkeyboard-input-daemon.sh <SESSION_ID> <CLAUDE_PID>
 ```
 
-**Note:** Custom subagents cannot be invoked directly via the Task tool's `subagent_type` parameter. Instead, use a general-purpose agent and request it to use the custom subagent via natural language.
-
-**What the agent does:**
-1. Creates `bridge-server/monitor.sh` - a monitoring script
-2. Runs the script in background (completely silent operation)
-3. Monitors session health every 2 seconds
-4. Auto-terminates if main session dies or session ID changes
-5. Restarts bridge server if it crashes (doesn't die)
-
-The agent is configured with:
-- **Model:** Haiku (fast, token-efficient for background tasks)
-- **Tools:** Bash, Read, Grep (restricted to necessary tools only)
-- **Description:** Proactively monitors T-Keyboard system
-- **Token efficiency:** Runs silently - zero token waste during monitoring
-
-### Agent Responsibilities
-
-The agent will:
-- Start bridge server if not running
-- Monitor main session health (auto-terminates if main session dies)
-- Set default buttons (Yes/No/Proceed/Help) on startup
+This is typically started automatically by the MCP server or setup scripts.
 
 ### Automatic Thinking State (Hooks)
 

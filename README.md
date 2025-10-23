@@ -34,27 +34,33 @@ Upload: `arduino/TKeyboardClaude/TKeyboardClaude.ino`
    - Your computer's IP address
    - Port: 8081
 
-### 3. Start with Claude Agent
+### 3. Start MCP Server
 
-Just paste this into your Claude Code session:
+Install dependencies and start the MCP server:
 
-```
-I need you to set up and monitor my T-Keyboard device. Please:
-
-1. First, start the bridge server:
-   - Navigate to tkeyboard-claude/bridge-server
-   - Run `npm install` if needed, then `npm start` in the background
-   - Confirm it's running on port 8081
-
-2. Then begin monitoring:
-   - Every 2 seconds, check http://localhost:8081/hook/get-inputs
-   - Process any keyboard inputs immediately as my responses
-   - Update keyboard display based on our conversation context
-
-Start the bridge server now and begin monitoring.
+```bash
+cd mcp-server
+npm install
+npm run build
+npm start
 ```
 
-That's it! Press buttons on your T-Keyboard and Claude responds immediately.
+### 4. Configure Claude Code MCP
+
+Add the T-Keyboard MCP server to Claude Code's MCP settings. The server exposes tools for keyboard management:
+- `update_keyboard_context` - Update buttons based on work context
+- `set_keyboard_buttons` - Directly set button labels
+- `get_keyboard_status` - Query keyboard state
+
+### 5. Start Input Daemon
+
+The input daemon injects button presses into the terminal:
+
+```bash
+bash installation/tkeyboard-input-daemon.sh <SESSION_ID> <CLAUDE_PID>
+```
+
+That's it! The keyboard buttons will automatically adapt to your conversation context.
 
 ## System Architecture
 
@@ -74,7 +80,7 @@ That's it! Press buttons on your T-Keyboard and Claude responds immediately.
                      │ WiFi
                      ↓
          ┌───────────────────────┐
-         │   Bridge Server       │
+         │   MCP Server          │
          │   (Node.js)           │
          │                       │
          │  • WebSocket (8080)   │  ← T-Keyboard connects
