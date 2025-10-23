@@ -8,6 +8,8 @@
 const WebSocket = require('ws');
 const http = require('http');
 const fs = require('fs');
+const crypto = require('crypto');
+const { execSync } = require('child_process');
 const Bonjour = require('bonjour-service');
 
 // Configuration
@@ -273,6 +275,81 @@ const server = http.createServer((req, res) => {
             queueLength: inputQueue.length,
             uptime: process.uptime()
         }));
+    }
+
+    // POST /generate-image - Generate icon dynamically
+    else if (url.pathname === '/generate-image' && req.method === 'POST') {
+        let body = '';
+        req.on('data', chunk => body += chunk);
+        req.on('end', () => {
+            try {
+                const { emoji, text, color } = JSON.parse(body);
+
+                if (!emoji && !text) {
+                    res.writeHead(400, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ error: 'Either emoji or text required' }));
+                    return;
+                }
+
+                // Generate hash-based filename for caching
+                const hashInput = `${emoji || ''}-${text || ''}-${color || ''}`;
+                const hash = crypto.createHash('md5').update(hashInput).digest('hex').substring(0, 8);
+                const filename = `${hash}.rgb`;
+                const path = require('path');
+                const imagePath = path.join(__dirname, '../images/cache', filename);
+
+                // Check if already exists
+                if (fs.existsSync(imagePath)) {
+                    console.log(`[Generate Image] Cache hit: ${filename}`);
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({
+                        success: true,
+                        filename,
+                        cached: true
+                    }));
+                    return;
+                }
+
+                // Generate image
+                console.log(`[Generate Image] Creating: ${filename} (emoji: ${emoji}, text: ${text})`);
+
+                // generate-images.js expects: --emoji "EMOJI" name OR --text "TEXT" name
+                // Prefer emoji if both provided
+                let cmd = 'node generate-images.js';
+                if (emoji) {
+                    cmd += ` --emoji "${emoji}" ${hash}`;
+                } else if (text) {
+                    cmd += ` --text "${text}" ${hash}`;
+                }
+                // Note: color parameter not yet supported by generate-images.js
+
+                try {
+                    execSync(cmd, {
+                        cwd: __dirname,
+                        stdio: 'pipe'
+                    });
+
+                    console.log(`[Generate Image] Created: ${filename}`);
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({
+                        success: true,
+                        filename,
+                        cached: false
+                    }));
+                } catch (err) {
+                    console.error(`[Generate Image] Error: ${err.message}`);
+                    res.writeHead(500, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({
+                        error: 'Image generation failed',
+                        details: err.message
+                    }));
+                }
+            } catch (err) {
+                console.error(`[Generate Image] Parse error: ${err.message}`);
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'Invalid JSON' }));
+            }
+        });
     }
 
     // GET /images/* - Serve image files
