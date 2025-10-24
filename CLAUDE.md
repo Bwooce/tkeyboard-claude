@@ -125,16 +125,16 @@ RESTART                        - Restart device
 ## Quick Test
 
 ```bash
-# Test bridge server
-curl http://localhost:8081/status
+# Check MCP server status
+curl -s http://localhost:8081/status | jq
 
-# Simulate button press
-curl -X POST http://localhost:8081/update \
+# Simulate button press (will inject into terminal)
+curl -X POST http://localhost:8081/test/button \
   -H "Content-Type: application/json" \
-  -d '{"type":"key_press","key":1,"text":"Yes"}'
+  -d '{"key":1,"text":"Yes"}'
 
-# Check queue
-curl http://localhost:8081/inputs
+# Check input queue (used by daemon)
+curl -s http://localhost:8081/inputs | jq
 ```
 
 ## Why This Approach?
@@ -170,28 +170,65 @@ tkeyboard-claude/
 └── README.md                      # User documentation
 ```
 
-## Starting the T-Keyboard MCP Server
+## Starting the T-Keyboard System
 
-The MCP server must be running for keyboard functionality.
+**CRITICAL:** The MCP server and input daemon must use the **same session ID**. Session mismatches prevent button presses from working.
 
-### Manual Start (for testing):
+### Recommended: Unified Startup Script
+
+**First time setup:**
 ```bash
 cd mcp-server
-npm install  # First time only
-npm run build  # Compile TypeScript
-npm start  # Start MCP server
+npm install
+npm run build
 ```
 
-### Setup in Claude Code:
+**Start the system (MCP server + input daemon):**
+```bash
+cd mcp-server
+./start-system.sh
+```
+
+This script:
+- Automatically finds Claude Code PID
+- Generates a shared session ID
+- Starts MCP server with that session ID
+- Starts input daemon with matching session ID
+- Displays status dashboard
+
+**Stop the system:**
+```bash
+cd mcp-server
+./stop-system.sh
+```
+
+### If You Need to Manually Manage Components
+
+**Check if system is running:**
+```bash
+# Check MCP server
+curl -s http://localhost:8081/status | jq
+
+# Check input daemon
+ps aux | grep tkeyboard-input-daemon
+```
+
+**Stop components manually:**
+```bash
+# Kill MCP server
+pkill -f "node build/tkeyboard-server.js"
+
+# Kill input daemon
+pkill -f "tkeyboard-input-daemon.sh"
+```
+
+### MCP Configuration in Claude Code
+
 The MCP server should be configured in Claude Code's MCP settings. Once configured, the tkeyboard tools will be automatically available in all conversations.
 
-**Input Daemon:**
-The input daemon must also be running to inject button presses:
-```bash
-bash installation/tkeyboard-input-daemon.sh <SESSION_ID> <CLAUDE_PID>
-```
-
-This is typically started automatically by the MCP server or setup scripts.
+**Location:** Settings → MCP → Add Server
+**Server name:** tkeyboard
+**Command:** `node /Users/bruce/Documents/Arduino/tkeyboard-claude/mcp-server/build/tkeyboard-server.js`
 
 ### Automatic Thinking State (Hooks)
 
@@ -216,9 +253,24 @@ The keyboard automatically shows thinking state via Claude Code hooks:
 - `tkeyboard-thinking-start.sh` - Shows STOP button
 - `tkeyboard-thinking-end.sh` - Restores default buttons
 
-### Without the Agent
+## Testing Without Hardware
 
-You can still test the system manually:
-- Start bridge: `node bridge-server/agent-bridge.js`
-- Update buttons: `curl -X POST http://localhost:8081/update -d '{"buttons":["Yes","No","Proceed","Help"]}'`
-- But you won't get automatic health monitoring or default button setup
+You can test the system without ESP32 hardware connected:
+
+**Simulate a button press:**
+```bash
+curl -X POST http://localhost:8081/test/button \
+  -H "Content-Type: application/json" \
+  -d '{"key":1,"text":"Yes"}'
+```
+
+This will inject "Yes" into your Claude Code terminal via the input daemon.
+
+**Check system status:**
+```bash
+# Server status (shows if ESP32 is connected)
+curl -s http://localhost:8081/status | jq
+
+# Current button configuration
+curl -s http://localhost:8081/inputs | jq
+```

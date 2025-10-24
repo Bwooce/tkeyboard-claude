@@ -41,6 +41,60 @@ The system uses an **MCP (Model Context Protocol) server** in `mcp-server/`:
 - Cleaner error handling (tool responses)
 - Better debugging (MCP inspector compatible)
 
+## System Startup and Session Management
+
+**Critical:** The MCP server and input daemon must use the **same session ID** to work together. Session ID mismatches cause the daemon to ignore queued inputs.
+
+### Unified Startup Script (`mcp-server/start-system.sh`)
+
+The startup script ensures session ID alignment:
+
+```bash
+./start-system.sh
+```
+
+**What it does:**
+1. Finds Claude Code PID automatically (searches for running `claude` process)
+2. Generates session ID: `tk-{timestamp}-{claude-pid}`
+3. Exports `CLAUDE_SESSION_ID` and `CLAUDE_PID` environment variables
+4. Starts MCP server (reads env vars)
+5. Starts input daemon with same session ID
+6. Displays status dashboard with PIDs and log locations
+7. Traps Ctrl+C to cleanly stop both processes
+
+**Session ID Configuration:**
+```typescript
+// mcp-server/src/tkeyboard-server.ts:22
+sessionId: process.env.CLAUDE_SESSION_ID || `tk-${Date.now()}-${process.pid}`
+```
+
+The MCP server checks for `CLAUDE_SESSION_ID` environment variable first, allowing the startup script to control the session ID.
+
+### Shutdown Script (`mcp-server/stop-system.sh`)
+
+Clean shutdown of all components:
+```bash
+./stop-system.sh
+```
+
+Kills both MCP server and input daemon processes.
+
+### Manual Startup (Not Recommended)
+
+If you need to start components separately:
+
+```bash
+# Start MCP server
+export CLAUDE_SESSION_ID="tk-$(date +%s)-{YOUR_CLAUDE_PID}"
+export CLAUDE_PID="{YOUR_CLAUDE_PID}"
+node build/tkeyboard-server.js &
+
+# Start input daemon with SAME session ID
+bash ../installation/tkeyboard-input-daemon.sh "$CLAUDE_SESSION_ID" "$CLAUDE_PID" &
+```
+
+**Warning:** Manual startup is error-prone. Use `start-system.sh` instead.
+
 ## Button Advisor Subagent
 
 The MCP server launches the **button-advisor** subagent (`.claude/agents/button-advisor.md`) for dynamic button decisions:
