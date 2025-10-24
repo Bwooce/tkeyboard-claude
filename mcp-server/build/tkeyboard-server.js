@@ -97,6 +97,141 @@ function sendToKeyboard(data) {
         console.log(`[WS] ✗ Cannot send to keyboard (not connected): ${JSON.stringify(data).substring(0, 100)}`);
     }
 }
+// Handle MCP tool calls (shared between stdio and HTTP proxy)
+async function handleMcpToolCall(name, args) {
+    if (name === 'update_keyboard_context') {
+        const { context, detail = '' } = args;
+        console.log(`[MCP] update_keyboard_context: ${context} (${detail})`);
+        // Launch button-advisor AI with explicit JSON-only instruction
+        let advisorResult;
+        try {
+            const inputData = JSON.stringify({
+                context,
+                detail,
+                currentState: currentContext
+            });
+            // Add explicit JSON-only instruction in the input message itself
+            const advisorPrompt = `CRITICAL: Output ONLY raw JSON, no markdown, no conversation, no code blocks.
+
+Input: ${inputData}
+
+Required output format - ONLY this structure, nothing else:
+{"buttons":["...","...","...","..."],"emojis":["...","...","...","..."],"reasoning":"..."}`;
+            console.log('[MCP] Launching button-advisor AI...');
+            // Execute button-advisor agent with explicit JSON instruction
+            const result = execSync(`/Users/bruce/.claude/local/claude --print code agent run button-advisor <<< '${advisorPrompt.replace(/'/g, "'\\''")}'`, {
+                encoding: 'utf-8',
+                maxBuffer: 1024 * 1024,
+                shell: '/bin/bash',
+                stdio: ['pipe', 'pipe', 'pipe']
+            });
+            // Extract JSON from output (may be wrapped in markdown code blocks)
+            let jsonText = result.trim();
+            // Remove "Tip:" line if present
+            jsonText = jsonText.replace(/^Tip:.*\n/, '');
+            // Extract from markdown code blocks if present
+            const codeBlockMatch = jsonText.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/);
+            if (codeBlockMatch) {
+                jsonText = codeBlockMatch[1];
+            }
+            else {
+                // Try to find JSON object directly
+                const jsonMatch = jsonText.match(/\{[\s\S]*"buttons"[\s\S]*?\}/);
+                if (jsonMatch) {
+                    jsonText = jsonMatch[0];
+                }
+            }
+            advisorResult = JSON.parse(jsonText);
+            console.log('[MCP] AI button advisor response:', advisorResult);
+        }
+        catch (error) {
+            console.error('[MCP] Button advisor failed:', error);
+            // Fallback to default buttons
+            advisorResult = {
+                buttons: ['Yes', 'No', 'Proceed', 'Help'],
+                emojis: ['✅', '❌', '▶️', '❓'],
+                reasoning: 'Fallback due to advisor error'
+            };
+        }
+        // Generate icons for the recommended buttons
+        const iconSpecs = advisorResult.buttons.map((btn, i) => ({
+            emoji: advisorResult.emojis[i],
+            name: btn.toLowerCase().replace(/\s+/g, '-')
+        }));
+        let images;
+        try {
+            images = await ensureIcons(iconSpecs);
+        }
+        catch (error) {
+            console.error('[MCP] Icon generation failed:', error);
+            images = ['', '', '', '']; // Fall back to text-only buttons
+        }
+        // Update current context
+        currentContext = {
+            type: context,
+            detail: detail,
+            buttons: advisorResult.buttons,
+            images: images,
+            timestamp: Date.now()
+        };
+        // Send to keyboard
+        sendToKeyboard({
+            type: 'update_options',
+            session_id: Date.now().toString(),
+            options: currentContext.buttons.map((text, index) => ({
+                text: text || '',
+                action: text || '',
+                image: currentContext.images[index] || '',
+                color: index === 0 ? '#00FFFF' : index === 1 ? '#FFFF00' : index === 2 ? '#FFFFFF' : '#00FF00'
+            }))
+        });
+        return {
+            success: true,
+            context,
+            buttons: advisorResult.buttons,
+            reasoning: advisorResult.reasoning
+        };
+    }
+    if (name === 'set_keyboard_buttons') {
+        const { buttons, actions, images } = args;
+        console.log(`[MCP] set_keyboard_buttons: ${buttons.join(', ')}`);
+        const finalActions = actions || buttons;
+        const finalImages = images || ['', '', '', ''];
+        // Update current context
+        currentContext = {
+            type: 'custom',
+            detail: 'manually set',
+            buttons: buttons,
+            images: finalImages,
+            timestamp: Date.now()
+        };
+        // Send to keyboard
+        sendToKeyboard({
+            type: 'update_options',
+            session_id: Date.now().toString(),
+            options: buttons.map((text, index) => ({
+                text: text || '',
+                action: finalActions[index] || text || '',
+                image: finalImages[index] || '',
+                color: index === 0 ? '#00FFFF' : index === 1 ? '#FFFF00' : index === 2 ? '#FFFFFF' : '#00FF00'
+            }))
+        });
+        return {
+            success: true,
+            buttons: buttons
+        };
+    }
+    if (name === 'get_keyboard_status') {
+        return {
+            connected: tkeyboardClient !== null,
+            sessionId: config.sessionId,
+            claudePid: config.claudePid,
+            currentContext: currentContext,
+            queueLength: inputQueue.length
+        };
+    }
+    throw new Error(`Unknown tool: ${name}`);
+}
 // HTTP API for input daemon compatibility
 const httpServer = http.createServer((req, res) => {
     const url = new URL(req.url, `http://${req.headers.host}`);
@@ -135,6 +270,23 @@ const httpServer = http.createServer((req, res) => {
             currentContext: currentContext.type,
             uptime: process.uptime()
         }));
+    }
+    // POST /mcp/tool - Handle MCP tool calls from proxy
+    else if (url.pathname === '/mcp/tool' && req.method === 'POST') {
+        let body = '';
+        req.on('data', chunk => body += chunk);
+        req.on('end', async () => {
+            try {
+                const { name, arguments: args } = JSON.parse(body);
+                const result = await handleMcpToolCall(name, args);
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify(result));
+            }
+            catch (err) {
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: err.message }));
+            }
+        });
     }
     // POST /test/button - Simulate button press (for testing)
     else if (url.pathname === '/test/button' && req.method === 'POST') {
@@ -277,24 +429,47 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     if (name === 'update_keyboard_context') {
         const { context, detail = '' } = args;
         console.log(`[MCP] update_keyboard_context: ${context} (${detail})`);
-        // Launch button-advisor subagent to determine optimal buttons
+        // Launch button-advisor AI with explicit JSON-only instruction
         let advisorResult;
         try {
-            const advisorInput = JSON.stringify({
+            const inputData = JSON.stringify({
                 context,
                 detail,
                 currentState: currentContext
             });
-            console.log('[MCP] Launching button-advisor subagent...');
-            // Execute button-advisor subagent
-            const result = execSync(`claude code agent run button-advisor <<< '${advisorInput}'`, {
+            // Add explicit JSON-only instruction in the input message itself
+            const advisorPrompt = `CRITICAL: Output ONLY raw JSON, no markdown, no conversation, no code blocks.
+
+Input: ${inputData}
+
+Required output format - ONLY this structure, nothing else:
+{"buttons":["...","...","...","..."],"emojis":["...","...","...","..."],"reasoning":"..."}`;
+            console.log('[MCP] Launching button-advisor AI...');
+            // Execute button-advisor agent with explicit JSON instruction
+            const result = execSync(`/Users/bruce/.claude/local/claude --print code agent run button-advisor <<< '${advisorPrompt.replace(/'/g, "'\\''")}'`, {
                 encoding: 'utf-8',
                 maxBuffer: 1024 * 1024,
-                shell: '/bin/bash'
+                shell: '/bin/bash',
+                stdio: ['pipe', 'pipe', 'pipe']
             });
-            // Parse subagent output (should be JSON)
-            advisorResult = JSON.parse(result);
-            console.log('[MCP] Button advisor response:', advisorResult);
+            // Extract JSON from output (may be wrapped in markdown code blocks)
+            let jsonText = result.trim();
+            // Remove "Tip:" line if present
+            jsonText = jsonText.replace(/^Tip:.*\n/, '');
+            // Extract from markdown code blocks if present
+            const codeBlockMatch = jsonText.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/);
+            if (codeBlockMatch) {
+                jsonText = codeBlockMatch[1];
+            }
+            else {
+                // Try to find JSON object directly
+                const jsonMatch = jsonText.match(/\{[\s\S]*"buttons"[\s\S]*?\}/);
+                if (jsonMatch) {
+                    jsonText = jsonMatch[0];
+                }
+            }
+            advisorResult = JSON.parse(jsonText);
+            console.log('[MCP] AI button advisor response:', advisorResult);
         }
         catch (error) {
             console.error('[MCP] Button advisor failed:', error);
