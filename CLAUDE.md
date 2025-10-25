@@ -1,5 +1,26 @@
 # T-Keyboard-S3 Claude Code Controller - Technical Context
 
+---
+# ⚠️ WORKFLOW REQUIREMENT: UPDATE KEYBOARD AFTER EVERY TOOL USE ⚠️
+
+**After EVERY tool call that completes (success or failure):**
+1. **Analyze**: What just happened? Did state change?
+2. **Decide**: Do the current buttons still make sense?
+3. **Update**: Call `update_keyboard_context()` if needed
+
+**Default assumption: YES, update the keyboard unless buttons are still relevant**
+
+Examples:
+- Tool returns error → ALWAYS update (context="debugging")
+- Compile completes → Update (context="testing" or "file_operations")
+- Git commit done → Update (context="git_operations")
+- Ask user question → Update BEFORE asking
+- Just having conversation → Update to "default"
+
+**If you skip this, the keyboard becomes stale and useless!**
+
+---
+
 ## T-Keyboard Context Management - REQUIRED
 
 **CRITICAL:** This project has an MCP server (tkeyboard) that manages the T-Keyboard hardware.
