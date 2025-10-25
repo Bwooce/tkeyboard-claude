@@ -7,6 +7,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { createCanvas } = require('@napi-rs/canvas');
 const GIFEncoder = require('gifencoder');
 
@@ -21,9 +22,19 @@ if (!fs.existsSync(OUTPUT_DIR)) {
     fs.mkdirSync(OUTPUT_DIR, { recursive: true });
 }
 
+// Generate hash from animation name
+function hashAnimation(name) {
+    return crypto.createHash('md5').update(name).digest('hex').substring(0, 8);
+}
+
+// Get animation name from command line or default to 'thinking'
+const animationName = process.argv[2] || 'thinking-dots';
+const hash = hashAnimation(animationName);
+const filename = `icon-${hash}.gif`;
+
 // Create GIF encoder
 const encoder = new GIFEncoder(IMAGE_SIZE, IMAGE_SIZE);
-const outputPath = path.join(OUTPUT_DIR, 'thinking.gif');
+const outputPath = path.join(OUTPUT_DIR, filename);
 const stream = fs.createWriteStream(outputPath);
 
 encoder.createReadStream().pipe(stream);
@@ -32,7 +43,7 @@ encoder.setRepeat(0);   // 0 = loop forever
 encoder.setDelay(FRAME_DELAY);
 encoder.setQuality(10); // 1-20, lower is better
 
-console.log('Generating animated GIF: thinking.gif');
+console.log(`Generating animated GIF: ${filename} (${animationName})`);
 console.log(`Frames: ${FRAME_COUNT}, Delay: ${FRAME_DELAY}ms, Size: ${IMAGE_SIZE}x${IMAGE_SIZE}`);
 
 // Generate frames

@@ -281,8 +281,8 @@ void renderDisplayForState(int displayIndex, ClaudeState state) {
                 // Check file extension to determine rendering method
                 bool renderSuccess = false;
                 if (currentOptions[displayIndex].imagePath.endsWith(".gif")) {
-                    // Render animated GIF (one cycle, periodic re-renders create animation loop)
-                    renderSuccess = playGIF(currentOptions[displayIndex].imagePath, displayIndex, 1);
+                    // Initialize GIF for frame-by-frame rendering (main loop will advance frames)
+                    renderSuccess = initializeGIF(currentOptions[displayIndex].imagePath, displayIndex);
                 } else {
                     // Render static RGB565 image
                     renderSuccess = loadImageFromSPIFFS(currentOptions[displayIndex].imagePath, displayIndex);
@@ -615,17 +615,8 @@ void loop() {
         case IDLE:
         case THINKING:
         case WAITING_INPUT: {
-            // Update GIF animations every 500ms (matches thinking.gif's 400ms frame delay)
-            static unsigned long lastUpdate = 0;
-            if (millis() - lastUpdate > 500) {
-                // Re-render any displays with GIF images
-                for (int i = 0; i < 4; i++) {
-                    if (!fsm.displayOverride[i] && currentOptions[i].hasImage && currentOptions[i].imagePath.endsWith(".gif")) {
-                        renderDisplayForState(i, fsm.current);
-                    }
-                }
-                lastUpdate = millis();
-            }
+            // Advance GIF frame if one is active (non-blocking, single frame per iteration)
+            advanceGIFFrame();
             break;
         }
 
@@ -1227,6 +1218,101 @@ bool loadImageFromSPIFFS(const String& path, uint8_t displayIndex) {
 
     free(buffer);
     return true;
+}
+
+// Initialize GIF for frame-by-frame rendering
+bool initializeGIF(const String& path, uint8_t displayIndex) {
+    Serial.printf("[GIF] initializeGIF: path='%s', display=%d\n", path.c_str(), displayIndex);
+    String fullPath = IMAGE_CACHE_PATH + path;
+
+    // If GIF doesn't exist in SPIFFS, try to download it
+    if (!SPIFFS.exists(fullPath)) {
+        Serial.printf("[GIF] GIF not cached: %s - attempting download\n", path.c_str());
+
+        // Get bridge server settings from Preferences
+        String bridgeHost = preferences.getString("bridge_host", "");
+        int bridgePort = preferences.getInt("bridge_port", 8080);
+
+        Serial.printf("[GIF] Bridge config: host='%s', port=%d\n", bridgeHost.c_str(), bridgePort);
+
+        if (bridgeHost.isEmpty()) {
+            Serial.println("[GIF] Bridge host not configured, cannot download GIF");
+            return false;
+        }
+
+        // Try to download the GIF
+        if (!downloadImageHTTP(path, bridgeHost, bridgePort)) {
+            Serial.printf("[GIF] Failed to download GIF: %s\n", path.c_str());
+            return false;
+        }
+
+        Serial.printf("[GIF] GIF downloaded successfully: %s\n", path.c_str());
+    } else {
+        Serial.printf("[GIF] GIF found in cache: %s\n", fullPath.c_str());
+    }
+
+    // Close any existing GIF
+    if (gifState.initialized) {
+        gif.close();
+    }
+
+    // Select the target display
+    selectDisplay(displayIndex);
+    delay(10);  // Brief delay after CS switch
+
+    // Initialize GIF decoder with BIG_ENDIAN_PIXELS for TFT_eSPI compatibility
+    gif.begin(BIG_ENDIAN_PIXELS);
+
+    // Open the GIF file
+    if (!gif.open(fullPath.c_str(), GIFOpenFile, GIFCloseFile, GIFReadFile, GIFSeekFile, GIFDraw)) {
+        Serial.printf("[GIF] Failed to open GIF: %s\n", fullPath.c_str());
+        return false;
+    }
+
+    Serial.printf("[GIF] GIF opened: %dx%d\n", gif.getCanvasWidth(), gif.getCanvasHeight());
+
+    // Update GIF state
+    gifState.activeDisplay = displayIndex;
+    gifState.path = path;
+    gifState.initialized = true;
+    gifState.lastFrameTime = millis();
+
+    return true;
+}
+
+// Advance GIF to next frame (called from main loop for non-blocking animation)
+void advanceGIFFrame() {
+    if (!gifState.initialized || gifState.activeDisplay < 0) {
+        return;
+    }
+
+    // Check if it's time to render the next frame
+    if (millis() - gifState.lastFrameTime < gifState.frameDelay) {
+        return;
+    }
+
+    // Select the display
+    selectDisplay(gifState.activeDisplay);
+
+    // Play one frame
+    if (!gif.playFrame(true, NULL)) {
+        // End of GIF - reset to beginning for loop
+        gif.reset();
+    }
+
+    // Update last frame time
+    gifState.lastFrameTime = millis();
+    feedWatchdog();  // Prevent watchdog timeout
+}
+
+// Stop GIF playback
+void stopGIF() {
+    if (gifState.initialized) {
+        Serial.printf("[GIF] Stopping GIF on display %d\n", gifState.activeDisplay);
+        gif.close();
+        gifState.initialized = false;
+        gifState.activeDisplay = -1;
+    }
 }
 
 // Play animated GIF on a specific display

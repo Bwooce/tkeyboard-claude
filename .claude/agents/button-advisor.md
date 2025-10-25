@@ -82,9 +82,9 @@ Expected JSON structure:
 **Output:**
 ```json
 {
-  "buttons": ["Check Logs", "Retry", "Skip", "Help"],
-  "emojis": ["📋", "🔄", "⏭️", "❓"],
-  "reasoning": "Auth error likely needs log inspection. Retry for quick fix attempt, skip to continue work."
+  "buttons": ["STOP", "Check Logs", "Retry", "Help"],
+  "emojis": ["🛑", "📋", "🔄", "❓"],
+  "reasoning": "Debugging context requires STOP button on button 1. Check Logs for inspection, Retry for quick fix attempt."
 }
 ```
 
@@ -171,25 +171,45 @@ Expected JSON structure:
 - Common choices: ✅ (yes/confirm), ❌ (no/cancel), 💾 (save/commit), 🔄 (retry), 📋 (logs/info), ❓ (help)
 - Avoid: obscure emojis, country flags, skin tone variants, simple unicode characters
 
+**Animation preferences:**
+- **PREFER animated GIFs where appropriate** - they provide better visual feedback
+- The keyboard supports displaying `.gif` files with smooth animation
+- Animated GIFs are NON-BLOCKING - button presses work during animation
+- Good candidates for animations:
+  - Loading/waiting states (spinning loaders, progress indicators)
+  - Success/error confirmations (checkmarks, X's that animate)
+  - Status indicators (pulsing dots, rotating icons)
+  - "Thinking" or "Processing" states
+- To suggest an animation, include a filename ending in `.gif` in your reasoning
+- Static emoji icons are generated from single emoji characters
+
 **Button order priority:**
-1. Most likely primary action
-2. Alternative positive action
-3. Negative/cancel action
+1. **STOP button (button 1) - CRITICAL FOR TOOL USE**
+   - When Claude Code is executing tools, button 1 MUST ALWAYS be "STOP" with 🛑 emoji
+   - This sends Esc key to interrupt tool execution
+   - Button text should be "STOP" (not "Stop", "Cancel", or other variants)
+   - This is MANDATORY for debugging, testing, file_operations, and any long-running operations
+   - Only contexts that DON'T need STOP: question_yesno (use "Yes"), question_choice (use "1" or first option)
+2. Most likely primary action (or alternative action if STOP is button 1)
+3. Alternative positive action or negative/cancel action
 4. Help (almost always 4th button)
 
 ## Context-Specific Guidelines
 
 ### git_operations
+- Button 1 MUST be STOP with 🛑 emoji (git operations can be long-running)
 - Focus on git workflow actions (commit, push, pull, status, diff)
 - Consider repository state (modified files, conflicts, branches)
 - Offer both immediate actions and review options
 
 ### debugging
+- Button 1 MUST be STOP with 🛑 emoji (CRITICAL for interrupting debugging tasks)
 - Prioritize diagnostic actions (logs, inspect, trace)
 - Offer retry/fix options
 - Include skip for non-blocking issues
 
 ### testing
+- Button 1 MUST be STOP with 🛑 emoji (tests can be long-running)
 - Focus on test execution (run, debug, build)
 - Consider test state (pending, failed, passed)
 - Offer selective testing options
@@ -205,6 +225,7 @@ Expected JSON structure:
 - Always include Help
 
 ### file_operations
+- Button 1 MUST be STOP with 🛑 emoji (file operations can be long-running or need interruption)
 - Offer action, cancel, and safety options (backup, diff)
 - Consider destructiveness of operation
 - Provide preview options when useful

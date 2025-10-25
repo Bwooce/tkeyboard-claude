@@ -341,6 +341,21 @@ function generateEmojiIcon(emoji, name) {
     // Offset Y position down by 10 pixels for better visual centering
     ctx.fillText(emoji, IMAGE_SIZE / 2, IMAGE_SIZE / 2 + 10);
 
+    // Strip transparency: replace transparent/semi-transparent pixels with black background
+    const imageData = ctx.getImageData(0, 0, IMAGE_SIZE, IMAGE_SIZE);
+    for (let i = 0; i < imageData.data.length; i += 4) {
+        const alpha = imageData.data[i + 3];
+        if (alpha < 255) {
+            // Blend with black background based on alpha
+            const alphaRatio = alpha / 255;
+            imageData.data[i] = Math.round(imageData.data[i] * alphaRatio);     // R
+            imageData.data[i + 1] = Math.round(imageData.data[i + 1] * alphaRatio); // G
+            imageData.data[i + 2] = Math.round(imageData.data[i + 2] * alphaRatio); // B
+            imageData.data[i + 3] = 255;  // Make fully opaque
+        }
+    }
+    ctx.putImageData(imageData, 0, 0);
+
     // Convert to RGB565
     const rgb565Buffer = canvasToRgb565(canvas);
 
