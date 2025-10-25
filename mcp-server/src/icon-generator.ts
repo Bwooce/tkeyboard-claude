@@ -37,7 +37,7 @@ export async function ensureIcon(emoji: string, name: string): Promise<string> {
     execSync(
       `node generate-images.js --emoji "${emoji}" icon-${hash}`,
       {
-        cwd: path.join(__dirname, '../../bridge-server'),
+        cwd: path.join(__dirname, '../../icon-scripts'),
         stdio: 'pipe'
       }
     );

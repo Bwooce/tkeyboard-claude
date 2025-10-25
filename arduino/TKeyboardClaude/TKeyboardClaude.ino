@@ -66,9 +66,18 @@ CRGB leds[NUM_LEDS];
 // Display Object - Single TFT_eSPI instance with manual CS switching via N085_Screen_Set()
 TFT_eSPI tft = TFT_eSPI();  // Single display object for all 4 screens
 
-// AnimatedGIF Support
+// AnimatedGIF Support - single decoder for frame-by-frame playback
 AnimatedGIF gif;
 File gifFile;  // Global file handle for GIF operations
+
+// GIF state for progressive frame-by-frame rendering (single active GIF)
+struct {
+    int8_t activeDisplay = -1;  // Which display is showing active GIF? (-1 = none)
+    String path;                 // Path to current GIF file
+    bool initialized = false;    // Has GIF been opened?
+    unsigned long lastFrameTime = 0;  // When was last frame rendered?
+    uint16_t frameDelay = 50;    // Delay between frames (ms)
+} gifState;
 
 // State Variables
 struct SystemState {
@@ -94,6 +103,7 @@ struct KeyOption {
 
 KeyOption currentOptions[4];
 bool optionsUpdated = false;
+volatile bool newOptionsArrived = false;  // Set when new options arrive during GIF playback
 
 // Forward Declarations (needed for FSM code)
 void drawTextOption(uint8_t displayIndex, const String& text, uint32_t color);
@@ -102,6 +112,9 @@ void drawRateLimitTimer();
 void drawErrorIcon();
 bool loadImageFromSPIFFS(const String& path, uint8_t display);
 bool playGIF(const String& path, uint8_t displayIndex, int loops);
+bool initializeGIF(const String& path, uint8_t displayIndex);
+void advanceGIFFrame();
+void stopGIF();
 bool downloadImageHTTP(const String& imagePath, const String& serverHost, uint16_t serverPort);
 void ensureSPIFFSSpace(size_t requiredBytes);
 void deleteRandomImage();
@@ -268,8 +281,8 @@ void renderDisplayForState(int displayIndex, ClaudeState state) {
                 // Check file extension to determine rendering method
                 bool renderSuccess = false;
                 if (currentOptions[displayIndex].imagePath.endsWith(".gif")) {
-                    // Render animated GIF (loop forever = 0)
-                    renderSuccess = playGIF(currentOptions[displayIndex].imagePath, displayIndex, 0);
+                    // Render animated GIF (one cycle, periodic re-renders create animation loop)
+                    renderSuccess = playGIF(currentOptions[displayIndex].imagePath, displayIndex, 1);
                 } else {
                     // Render static RGB565 image
                     renderSuccess = loadImageFromSPIFFS(currentOptions[displayIndex].imagePath, displayIndex);
@@ -599,6 +612,23 @@ void loop() {
 
     // State-specific periodic updates
     switch (fsm.current) {
+        case IDLE:
+        case THINKING:
+        case WAITING_INPUT: {
+            // Update GIF animations every 500ms (matches thinking.gif's 400ms frame delay)
+            static unsigned long lastUpdate = 0;
+            if (millis() - lastUpdate > 500) {
+                // Re-render any displays with GIF images
+                for (int i = 0; i < 4; i++) {
+                    if (!fsm.displayOverride[i] && currentOptions[i].hasImage && currentOptions[i].imagePath.endsWith(".gif")) {
+                        renderDisplayForState(i, fsm.current);
+                    }
+                }
+                lastUpdate = millis();
+            }
+            break;
+        }
+
         case RATE_LIMITED: {
             // Update timer every second
             static unsigned long lastUpdate = 0;
@@ -971,6 +1001,7 @@ void processClaudeMessage(JsonDocument& doc) {
         }
 
         optionsUpdated = true;
+        newOptionsArrived = true;  // Signal to any running GIF loops
 
     } else if (type == "status") {
         String stateStr = doc["state"];
@@ -1246,26 +1277,64 @@ bool playGIF(const String& path, uint8_t displayIndex, int loops = 1) {
         gif.getCanvasWidth(), gif.getCanvasHeight());
 
     // Play the animation
-    // NOTE: For button images (loops=0), play one cycle then return
-    // The FSM will re-render periodically, creating continuous animation
     tft.startWrite();  // Lock SPI for faster updates
 
-    int actualLoops = (loops == 0) ? 1 : loops;  // 0 = infinite, but play 1 cycle per call
-    for (int loop = 0; loop < actualLoops; loop++) {
-        while (gif.playFrame(true, NULL)) {
-            yield();  // Let ESP32 handle WiFi/tasks
-        }
+    if (loops == 0) {
+        // Infinite loop mode - keep playing until button state changes
+        Serial.printf("[GIF] Starting infinite loop playback\n");
+        newOptionsArrived = false;  // Clear flag before starting
+        int cycleCount = 0;
 
-        // Reset to beginning for next loop
-        if (loop < actualLoops - 1) {
+        while (true) {
+            // Play one complete cycle
+            while (gif.playFrame(true, NULL)) {
+                yield();  // Let ESP32 handle WiFi/tasks
+                feedWatchdog();  // Prevent watchdog timeout during long GIF playback
+
+                // Check mid-frame if new buttons arrived
+                if (newOptionsArrived) {
+                    Serial.printf("[GIF] Button update detected mid-frame, stopping\n");
+                    tft.endWrite();
+                    gif.close();
+                    return true;
+                }
+            }
+
+            cycleCount++;
+
+            // Check if button state changed between cycles
+            if (newOptionsArrived) {
+                Serial.printf("[GIF] Button update detected, stopping after %d cycles\n", cycleCount);
+                break;
+            }
+
+            // Reset for next cycle
             gif.reset();
+
+            // Periodically log progress
+            if (cycleCount % 10 == 0) {
+                Serial.printf("[GIF] Completed %d cycles\n", cycleCount);
+            }
+        }
+    } else {
+        // Fixed number of loops
+        for (int loop = 0; loop < loops; loop++) {
+            while (gif.playFrame(true, NULL)) {
+                yield();  // Let ESP32 handle WiFi/tasks
+                feedWatchdog();  // Prevent watchdog timeout during long GIF playback
+            }
+
+            // Reset to beginning for next loop
+            if (loop < loops - 1) {
+                gif.reset();
+            }
         }
     }
 
     tft.endWrite();  // Release SPI
     gif.close();
 
-    Serial.printf("[GIF] Playback complete (1 cycle) on display %d\n", displayIndex);
+    Serial.printf("[GIF] Playback complete on display %d\n", displayIndex);
     return true;
 }
 

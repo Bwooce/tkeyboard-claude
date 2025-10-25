@@ -14,6 +14,7 @@
   "dependencies": {
     "@napi-rs/canvas": "^0.1.80",
     "bonjour-service": "^1.2.1",
+    "gifencoder": "^2.0.1",
     "ws": "^8.14.0"
   },
   "devDependencies": {
