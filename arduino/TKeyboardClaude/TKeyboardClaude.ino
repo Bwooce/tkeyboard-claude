@@ -16,6 +16,7 @@
 #include <SPI.h>
 #include <TFT_eSPI.h>
 #include <T-Keyboard_S3_Drive.h>
+#include <AnimatedGIF.h>
 #include <vector>
 #include <esp_task_wdt.h>
 
@@ -65,6 +66,10 @@ CRGB leds[NUM_LEDS];
 // Display Object - Single TFT_eSPI instance with manual CS switching via N085_Screen_Set()
 TFT_eSPI tft = TFT_eSPI();  // Single display object for all 4 screens
 
+// AnimatedGIF Support
+AnimatedGIF gif;
+File gifFile;  // Global file handle for GIF operations
+
 // State Variables
 struct SystemState {
     bool wifiConfigMode = false;
@@ -96,6 +101,7 @@ void drawLargeText(uint8_t displayIndex, const String& text, uint32_t color);
 void drawRateLimitTimer();
 void drawErrorIcon();
 bool loadImageFromSPIFFS(const String& path, uint8_t display);
+bool playGIF(const String& path, uint8_t displayIndex, int loops);
 bool downloadImageHTTP(const String& imagePath, const String& serverHost, uint16_t serverPort);
 void ensureSPIFFSSpace(size_t requiredBytes);
 void deleteRandomImage();
@@ -343,6 +349,107 @@ void IRAM_ATTR key1ISR() { keyInterrupts[0] = true; }
 void IRAM_ATTR key2ISR() { keyInterrupts[1] = true; }
 void IRAM_ATTR key3ISR() { keyInterrupts[2] = true; }
 void IRAM_ATTR key4ISR() { keyInterrupts[3] = true; }
+
+// ============================================================================
+// ANIMATED GIF SUPPORT
+// ============================================================================
+
+// SPIFFS File Callbacks for AnimatedGIF library
+void * GIFOpenFile(const char *fname, int32_t *pSize) {
+    Serial.printf("[GIF] Opening file: %s\n", fname);
+    gifFile = SPIFFS.open(fname, "r");
+    if (gifFile) {
+        *pSize = gifFile.size();
+        Serial.printf("[GIF] File size: %d bytes\n", *pSize);
+        return (void *)&gifFile;
+    }
+    Serial.println("[GIF] Failed to open file");
+    return NULL;
+}
+
+void GIFCloseFile(void *pHandle) {
+    File *f = static_cast<File *>(pHandle);
+    if (f != NULL) {
+        f->close();
+        Serial.println("[GIF] File closed");
+    }
+}
+
+int32_t GIFReadFile(GIFFILE *pFile, uint8_t *pBuf, int32_t iLen) {
+    int32_t iBytesRead = iLen;
+    File *f = static_cast<File *>(pFile->fHandle);
+
+    // Don't read past EOF
+    if ((pFile->iSize - pFile->iPos) < iLen)
+        iBytesRead = pFile->iSize - pFile->iPos - 1;
+
+    if (iBytesRead <= 0)
+        return 0;
+
+    iBytesRead = (int32_t)f->read(pBuf, iBytesRead);
+    pFile->iPos = f->position();
+
+    return iBytesRead;
+}
+
+int32_t GIFSeekFile(GIFFILE *pFile, int32_t iPosition) {
+    File *f = static_cast<File *>(pFile->fHandle);
+    f->seek(iPosition);
+    pFile->iPos = (int32_t)f->position();
+    return pFile->iPos;
+}
+
+// GIF Draw Callback - renders each scanline to TFT_eSPI display
+#define GIF_BUFFER_SIZE 256  // Buffer for scanline conversion
+uint16_t gifLineBuffer[GIF_BUFFER_SIZE];
+
+void GIFDraw(GIFDRAW *pDraw) {
+    uint8_t *s;
+    uint16_t *d, *usPalette;
+    int x, y, iWidth;
+
+    // Get palette (already in RGB565 format)
+    usPalette = pDraw->pPalette;
+    y = pDraw->iY + pDraw->y;
+
+    // Bounds check
+    iWidth = pDraw->iWidth;
+    if (iWidth + pDraw->iX > SCREEN_WIDTH)
+        iWidth = SCREEN_WIDTH - pDraw->iX;
+
+    if (y >= SCREEN_HEIGHT || pDraw->iX >= SCREEN_WIDTH || iWidth < 1)
+        return;
+
+    s = pDraw->pPixels;
+
+    // Handle transparency
+    if (pDraw->ucHasTransparency) {
+        uint8_t ucTransparent = pDraw->ucTransparent;
+
+        // Read existing pixels for transparent areas (slower but correct)
+        for (int i = 0; i < iWidth; i++) {
+            if (s[i] == ucTransparent) {
+                // Keep existing pixel (would need to read from display - skip for now)
+                gifLineBuffer[i] = 0;  // Or read from framebuffer if available
+            } else {
+                gifLineBuffer[i] = usPalette[s[i]];
+            }
+        }
+    } else {
+        // Fast path - no transparency, just convert palette indices to RGB565
+        for (int i = 0; i < iWidth; i++) {
+            gifLineBuffer[i] = usPalette[s[i]];
+        }
+    }
+
+    // Write scanline to TFT display
+    tft.setAddrWindow(pDraw->iX, y, iWidth, 1);
+    tft.pushPixels(gifLineBuffer, iWidth);
+}
+
+// ============================================================================
+// MAIN SETUP
+// ============================================================================
 
 void setup() {
     Serial.begin(115200);
@@ -1077,6 +1184,74 @@ bool loadImageFromSPIFFS(const String& path, uint8_t displayIndex) {
     Serial.printf("[IMG] Display %d rendered successfully\n", displayIndex);
 
     free(buffer);
+    return true;
+}
+
+// Play animated GIF on a specific display
+bool playGIF(const String& path, uint8_t displayIndex, int loops = 1) {
+    Serial.printf("[GIF] playGIF called: path='%s', display=%d, loops=%d\n", path.c_str(), displayIndex, loops);
+    String fullPath = IMAGE_CACHE_PATH + path;
+
+    // If GIF doesn't exist in SPIFFS, try to download it
+    if (!SPIFFS.exists(fullPath)) {
+        Serial.printf("[GIF] GIF not cached: %s - attempting download\n", path.c_str());
+
+        // Get bridge server settings from Preferences
+        String bridgeHost = preferences.getString("bridge_host", "");
+        int bridgePort = preferences.getInt("bridge_port", 8080);
+
+        Serial.printf("[GIF] Bridge config: host='%s', port=%d\n", bridgeHost.c_str(), bridgePort);
+
+        if (bridgeHost.isEmpty()) {
+            Serial.println("[GIF] Bridge host not configured, cannot download GIF");
+            return false;
+        }
+
+        // Try to download the GIF
+        if (!downloadImageHTTP(path, bridgeHost, bridgePort)) {
+            Serial.printf("[GIF] Failed to download GIF: %s\n", path.c_str());
+            return false;
+        }
+
+        Serial.printf("[GIF] GIF downloaded successfully: %s\n", path.c_str());
+    } else {
+        Serial.printf("[GIF] GIF found in cache: %s\n", fullPath.c_str());
+    }
+
+    // Select the target display
+    selectDisplay(displayIndex);
+    delay(10);  // Brief delay after CS switch
+
+    // Initialize GIF decoder with BIG_ENDIAN_PIXELS for TFT_eSPI compatibility
+    gif.begin(BIG_ENDIAN_PIXELS);
+
+    // Open the GIF file
+    if (!gif.open(fullPath.c_str(), GIFOpenFile, GIFCloseFile, GIFReadFile, GIFSeekFile, GIFDraw)) {
+        Serial.printf("[GIF] Failed to open GIF: %s\n", fullPath.c_str());
+        return false;
+    }
+
+    Serial.printf("[GIF] GIF opened: %dx%d\n",
+        gif.getCanvasWidth(), gif.getCanvasHeight());
+
+    // Play the animation
+    tft.startWrite();  // Lock SPI for faster updates
+
+    for (int loop = 0; loop < loops; loop++) {
+        while (gif.playFrame(true, NULL)) {
+            yield();  // Let ESP32 handle WiFi/tasks
+        }
+
+        // Reset to beginning for next loop
+        if (loop < loops - 1) {
+            gif.reset();
+        }
+    }
+
+    tft.endWrite();  // Release SPI
+    gif.close();
+
+    Serial.printf("[GIF] Playback complete on display %d\n", displayIndex);
     return true;
 }
 
