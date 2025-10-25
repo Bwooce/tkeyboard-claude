@@ -338,7 +338,8 @@ function generateEmojiIcon(emoji, name) {
     ctx.font = '96px Arial, "Apple Color Emoji", "Segoe UI Emoji"';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(emoji, IMAGE_SIZE / 2, IMAGE_SIZE / 2);
+    // Offset Y position down by 10 pixels for better visual centering
+    ctx.fillText(emoji, IMAGE_SIZE / 2, IMAGE_SIZE / 2 + 10);
 
     // Convert to RGB565
     const rgb565Buffer = canvasToRgb565(canvas);
