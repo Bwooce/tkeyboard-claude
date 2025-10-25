@@ -239,6 +239,27 @@ Required output format - ONLY this structure, nothing else:
       advisorResult = JSON.parse(jsonText);
       console.log('[MCP] AI button advisor response:', advisorResult);
 
+      // Validate and fix bad emojis (AI often returns simple unicode despite instructions)
+      const badEmojiMap: Record<string, string> = {
+        '✓': '✅', '✗': '❌', '?': '❓',
+        '→': '▶️', '←': '◀️', '↑': '⏫', '↓': '⏬',
+        '•': '🔘', '○': '⚪', '◦': '⚪'
+      };
+
+      let fixed = false;
+      advisorResult.emojis = advisorResult.emojis.map((emoji: string) => {
+        if (badEmojiMap[emoji]) {
+          console.log(`[MCP] Fixed bad emoji: ${emoji} → ${badEmojiMap[emoji]}`);
+          fixed = true;
+          return badEmojiMap[emoji];
+        }
+        return emoji;
+      });
+
+      if (fixed) {
+        console.log('[MCP] Emojis after fix:', advisorResult.emojis);
+      }
+
     } catch (error) {
       console.error('[MCP] Button advisor failed:', error);
       // Fallback to default buttons
@@ -640,6 +661,27 @@ Required output format - ONLY this structure, nothing else:
 
       advisorResult = JSON.parse(jsonText);
       console.log('[MCP] AI button advisor response:', advisorResult);
+
+      // Validate and fix bad emojis (AI often returns simple unicode despite instructions)
+      const badEmojiMap: Record<string, string> = {
+        '✓': '✅', '✗': '❌', '?': '❓',
+        '→': '▶️', '←': '◀️', '↑': '⏫', '↓': '⏬',
+        '•': '🔘', '○': '⚪', '◦': '⚪'
+      };
+
+      let fixed = false;
+      advisorResult.emojis = advisorResult.emojis.map((emoji: string) => {
+        if (badEmojiMap[emoji]) {
+          console.log(`[MCP] Fixed bad emoji: ${emoji} → ${badEmojiMap[emoji]}`);
+          fixed = true;
+          return badEmojiMap[emoji];
+        }
+        return emoji;
+      });
+
+      if (fixed) {
+        console.log('[MCP] Emojis after fix:', advisorResult.emojis);
+      }
 
     } catch (error) {
       console.error('[MCP] Button advisor failed:', error);

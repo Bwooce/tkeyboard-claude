@@ -40,13 +40,23 @@ Expected JSON structure:
   "reasoning": "Brief explanation of choices"
 }
 
+**⚠️ CRITICAL EMOJI REQUIREMENT ⚠️**
+**YOU MUST USE FULL EMOJI, NOT SIMPLE UNICODE SYMBOLS:**
+- ✅ CORRECT: ✅ ❌ ❓ 🛑 📋 🔄 💾 (colorful full emoji)
+- ❌ WRONG: ✓ ✗ ? (tiny white symbols - WILL FAIL)
+
+**NEVER use these simple unicode:**
+- ✓ ✗ (use ✅ ❌ instead)
+- ? (use ❓ instead)
+- → ← ↑ ↓ (use ▶️ or text instead)
+
 **CRITICAL:**
 - Output ONLY the JSON object, nothing else
 - No markdown code blocks, no explanations before/after
 - Just the raw JSON
 - Button text must be 1-12 characters (display constraint)
 - Always provide exactly 4 buttons and 4 emojis
-- Emojis must be single Unicode characters
+- Emojis must be FULL EMOJI characters (see above)
 
 ## Examples
 
