@@ -265,7 +265,18 @@ void renderDisplayForState(int displayIndex, ClaudeState state) {
         case WAITING_INPUT:
             // Show current options
             if (currentOptions[displayIndex].hasImage) {
-                if (!loadImageFromSPIFFS(currentOptions[displayIndex].imagePath, displayIndex)) {
+                // Check file extension to determine rendering method
+                bool renderSuccess = false;
+                if (currentOptions[displayIndex].imagePath.endsWith(".gif")) {
+                    // Render animated GIF (loop forever = 0)
+                    renderSuccess = playGIF(currentOptions[displayIndex].imagePath, displayIndex, 0);
+                } else {
+                    // Render static RGB565 image
+                    renderSuccess = loadImageFromSPIFFS(currentOptions[displayIndex].imagePath, displayIndex);
+                }
+
+                // Fallback to text if image rendering failed
+                if (!renderSuccess) {
                     drawTextOption(displayIndex, currentOptions[displayIndex].text, currentOptions[displayIndex].color);
                 }
             } else {
@@ -1235,15 +1246,18 @@ bool playGIF(const String& path, uint8_t displayIndex, int loops = 1) {
         gif.getCanvasWidth(), gif.getCanvasHeight());
 
     // Play the animation
+    // NOTE: For button images (loops=0), play one cycle then return
+    // The FSM will re-render periodically, creating continuous animation
     tft.startWrite();  // Lock SPI for faster updates
 
-    for (int loop = 0; loop < loops; loop++) {
+    int actualLoops = (loops == 0) ? 1 : loops;  // 0 = infinite, but play 1 cycle per call
+    for (int loop = 0; loop < actualLoops; loop++) {
         while (gif.playFrame(true, NULL)) {
             yield();  // Let ESP32 handle WiFi/tasks
         }
 
         // Reset to beginning for next loop
-        if (loop < loops - 1) {
+        if (loop < actualLoops - 1) {
             gif.reset();
         }
     }
@@ -1251,7 +1265,7 @@ bool playGIF(const String& path, uint8_t displayIndex, int loops = 1) {
     tft.endWrite();  // Release SPI
     gif.close();
 
-    Serial.printf("[GIF] Playback complete on display %d\n", displayIndex);
+    Serial.printf("[GIF] Playback complete (1 cycle) on display %d\n", displayIndex);
     return true;
 }
 
@@ -1342,14 +1356,16 @@ bool downloadImageHTTP(const String& imagePath, const String& serverHost, uint16
     int contentLength = http.getSize();
     const size_t expectedSize = SCREEN_WIDTH * SCREEN_HEIGHT * 2;  // 128x128x2 = 32768
 
-    if (contentLength != expectedSize) {
-        Serial.printf("Invalid image size: %d (expected %d)\n", contentLength, expectedSize);
+    // Validate size for RGB files, but allow any size for GIFs
+    bool isGif = imagePath.endsWith(".gif");
+    if (!isGif && contentLength != expectedSize) {
+        Serial.printf("Invalid RGB image size: %d (expected %d)\n", contentLength, expectedSize);
         http.end();
         return false;
     }
 
-    // Ensure SPIFFS has space
-    ensureSPIFFSSpace(expectedSize);
+    // Ensure SPIFFS has space (use actual content length for GIFs)
+    ensureSPIFFSSpace(contentLength);
 
     // Open file for writing
     String fullPath = IMAGE_CACHE_PATH + imagePath;
@@ -1393,11 +1409,11 @@ bool downloadImageHTTP(const String& imagePath, const String& serverHost, uint16
         Serial.printf("[SPIFFS] ERROR: Write error during download of %s\n", imagePath.c_str());
         SPIFFS.remove(fullPath);  // Clean up failed download
         return false;
-    } else if (bytesWritten == expectedSize) {
+    } else if (bytesWritten == contentLength) {
         Serial.printf("[SPIFFS] Downloaded and cached: %s (%u bytes)\n", imagePath.c_str(), bytesWritten);
         return true;
     } else {
-        Serial.printf("[SPIFFS] ERROR: Download incomplete: %u/%u bytes\n", bytesWritten, expectedSize);
+        Serial.printf("[SPIFFS] ERROR: Download incomplete: %u/%u bytes\n", bytesWritten, contentLength);
         SPIFFS.remove(fullPath);  // Clean up incomplete download
         return false;
     }
