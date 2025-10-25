@@ -3,6 +3,11 @@
 ---
 # ⚠️ WORKFLOW REQUIREMENT: UPDATE KEYBOARD AFTER EVERY TOOL USE ⚠️
 
+**CRITICAL: STOP Button During Tool Execution**
+- While ANY tool is running, the keyboard MUST show a STOP button (sends Esc)
+- The PreToolUse hook handles this automatically, but verify it's working
+- If hooks fail, manually update keyboard before long-running tools
+
 **After EVERY tool call that completes (success or failure):**
 1. **Analyze**: What just happened? Did state change?
 2. **Decide**: Do the current buttons still make sense?
