@@ -10,9 +10,18 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import WebSocket, { WebSocketServer } from 'ws';
 import * as http from 'http';
+import * as fs from 'fs';
+import * as path from 'path';
+import { fileURLToPath } from 'url';
 import { Bonjour } from 'bonjour-service';
 import { execSync } from 'child_process';
 import { ensureIcons } from './icon-generator.js';
+
+// Get project root directory
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const PROJECT_ROOT = path.resolve(__dirname, '../..');
+const ICON_CACHE_DIR = path.join(PROJECT_ROOT, 'images', 'cache');
 
 // Configuration
 const config = {
@@ -360,6 +369,35 @@ const httpServer = http.createServer((req, res) => {
       } catch (err: any) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: err.message }));
+      }
+    });
+  }
+
+  // GET /images/* - Serve icon files
+  else if (url.pathname.startsWith('/images/') && req.method === 'GET') {
+    const filename = path.basename(url.pathname);
+    const iconPath = path.join(ICON_CACHE_DIR, filename);
+
+    // Security check: ensure the file is within cache directory
+    if (!iconPath.startsWith(ICON_CACHE_DIR)) {
+      res.writeHead(403);
+      res.end('Forbidden');
+      return;
+    }
+
+    fs.readFile(iconPath, (err, data) => {
+      if (err) {
+        if (config.debug) console.log(`[HTTP] Icon not found: ${filename}`);
+        res.writeHead(404);
+        res.end('Not found');
+      } else {
+        res.writeHead(200, {
+          'Content-Type': 'application/octet-stream',
+          'Content-Length': data.length,
+          'Cache-Control': 'public, max-age=86400'  // Cache for 24 hours
+        });
+        res.end(data);
+        if (config.debug) console.log(`[HTTP] Served icon: ${filename} (${data.length} bytes)`);
       }
     });
   }

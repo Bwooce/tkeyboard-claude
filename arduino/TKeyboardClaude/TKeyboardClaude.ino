@@ -830,6 +830,11 @@ void processClaudeMessage(JsonDocument& doc) {
         state.sessionId = doc["session_id"].as<String>();
         JsonArray options = doc["options"];
 
+        // Clear display overrides so new options can render properly
+        for (int i = 0; i < 4; i++) {
+            fsm.displayOverride[i] = false;
+        }
+
         for (int i = 0; i < 4 && i < options.size(); i++) {
             currentOptions[i].text = options[i]["text"].as<String>();
             currentOptions[i].action = options[i]["action"].as<String>();
@@ -965,7 +970,8 @@ void handleKeyPress(int key) {
     if (key == 1) key1PressTime = millis();
     if (key == 4) key4PressTime = millis();
 
-    if (abs((int)(key1PressTime - key4PressTime)) < 500) {
+    // Only check for config mode combo when key 1 or key 4 was just pressed
+    if ((key == 1 || key == 4) && abs((int)(key1PressTime - key4PressTime)) < 500) {
         // Both keys pressed within 500ms
         Serial.println("Entering config mode...");
         state.wifiConfigMode = true;
@@ -1064,8 +1070,11 @@ bool loadImageFromSPIFFS(const String& path, uint8_t displayIndex) {
     }
 
     // Draw image to display
+    Serial.printf("[IMG] Rendering to display %d...\n", displayIndex);
     selectDisplay(displayIndex);
+    delay(10);  // Brief delay after CS switch
     tft.pushImage(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, (uint16_t*)buffer);
+    Serial.printf("[IMG] Display %d rendered successfully\n", displayIndex);
 
     free(buffer);
     return true;
@@ -1714,6 +1723,34 @@ void handleSerialCommands() {
         Serial.printf("Config Mode: %s\n", state.wifiConfigMode ? "Yes" : "No");
         Serial.println("========================\n");
     }
+    // CLEAR_CACHE
+    else if (command == "CLEAR_CACHE") {
+        Serial.println("Clearing SPIFFS image cache...");
+        File root = SPIFFS.open(IMAGE_CACHE_PATH);
+        if (!root) {
+            Serial.println("Failed to open image cache directory");
+            return;
+        }
+
+        int deletedCount = 0;
+        File file = root.openNextFile();
+        while (file) {
+            String filename = file.name();
+            file.close();
+
+            if (filename.endsWith(".rgb")) {
+                String fullPath = IMAGE_CACHE_PATH + filename;
+                if (SPIFFS.remove(fullPath)) {
+                    Serial.printf("Deleted: %s\n", filename.c_str());
+                    deletedCount++;
+                }
+            }
+            file = root.openNextFile();
+        }
+        root.close();
+
+        Serial.printf("Cache cleared: %d images deleted\n", deletedCount);
+    }
     // RESTART
     else if (command == "RESTART") {
         Serial.println("Restarting...");
@@ -1727,6 +1764,7 @@ void handleSerialCommands() {
         Serial.println("  PORT:8080 - Set bridge server port");
         Serial.println("  CONFIG - Enter AP config mode");
         Serial.println("  STATUS - Show current settings");
+        Serial.println("  CLEAR_CACHE - Delete all cached images");
         Serial.println("  RESTART - Restart device");
     }
 }
