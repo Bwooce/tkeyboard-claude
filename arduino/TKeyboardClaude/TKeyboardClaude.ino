@@ -1726,23 +1726,29 @@ void handleSerialCommands() {
     // CLEAR_CACHE
     else if (command == "CLEAR_CACHE") {
         Serial.println("Clearing SPIFFS image cache...");
-        File root = SPIFFS.open(IMAGE_CACHE_PATH);
-        if (!root) {
-            Serial.println("Failed to open image cache directory");
+
+        int deletedCount = 0;
+        File root = SPIFFS.open("/");
+        if (!root || !root.isDirectory()) {
+            Serial.println("Failed to open root directory");
             return;
         }
 
-        int deletedCount = 0;
         File file = root.openNextFile();
         while (file) {
+            String fullPath = file.path();
             String filename = file.name();
             file.close();
 
-            if (filename.endsWith(".rgb")) {
-                String fullPath = IMAGE_CACHE_PATH + filename;
+            Serial.printf("[DEBUG] Found: path='%s', name='%s'\n", fullPath.c_str(), filename.c_str());
+
+            if (fullPath.startsWith(IMAGE_CACHE_PATH) && fullPath.endsWith(".rgb")) {
+                Serial.printf("[DEBUG] Deleting: %s\n", fullPath.c_str());
                 if (SPIFFS.remove(fullPath)) {
-                    Serial.printf("Deleted: %s\n", filename.c_str());
+                    Serial.printf("Deleted: %s\n", fullPath.c_str());
                     deletedCount++;
+                } else {
+                    Serial.printf("[ERROR] Failed to delete: %s\n", fullPath.c_str());
                 }
             }
             file = root.openNextFile();

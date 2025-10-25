@@ -334,6 +334,7 @@ function generateEmojiIcon(emoji, name) {
     ctx.fillRect(0, 0, IMAGE_SIZE, IMAGE_SIZE);
 
     // Draw emoji (96px = 75% of 128px display for optimal visibility)
+    ctx.fillStyle = '#FFFFFF';  // White text for visibility on black background
     ctx.font = '96px Arial, "Apple Color Emoji", "Segoe UI Emoji"';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
@@ -342,10 +343,39 @@ function generateEmojiIcon(emoji, name) {
     // Convert to RGB565
     const rgb565Buffer = canvasToRgb565(canvas);
 
+    // Validate: ensure icon has sufficient non-zero pixels
+    let nonZeroBytes = 0;
+    for (let i = 0; i < rgb565Buffer.length; i++) {
+        if (rgb565Buffer[i] !== 0) nonZeroBytes++;
+    }
+
+    const totalBytes = rgb565Buffer.length;
+    const nonZeroPercent = (nonZeroBytes / totalBytes * 100).toFixed(1);
+
+    // Validation thresholds
+    const MIN_CRITICAL_BYTES = 100;   // < 100 bytes = completely broken (black-on-black)
+    const MIN_WARNING_PERCENT = 5.0;  // < 5% filled = likely a simple unicode char, not full emoji
+
+    if (nonZeroBytes < MIN_CRITICAL_BYTES) {
+        console.error(`✗ ERROR: Generated icon is almost completely blank (${nonZeroBytes} bytes, ${nonZeroPercent}%)`);
+        console.error(`  This indicates a serious rendering bug (e.g., black text on black background).`);
+        console.error(`  REFUSING to save this broken icon.`);
+        throw new Error(`Icon generation failed: only ${nonZeroBytes} non-zero bytes`);
+    }
+
+    const nonZeroPercentNum = parseFloat(nonZeroPercent);
+    if (nonZeroPercentNum < MIN_WARNING_PERCENT) {
+        console.error(`✗ WARNING: Generated icon has low pixel coverage (${nonZeroBytes} bytes, ${nonZeroPercent}%)`);
+        console.error(`  Expected: >${MIN_WARNING_PERCENT}% for full emoji rendering`);
+        console.error(`  This likely means the emoji "${emoji}" didn't render as a full emoji.`);
+        console.error(`  Consider using a full emoji character instead (e.g., ✅ instead of ✓).`);
+        console.error(`  The icon may appear as a tiny white symbol on the device.`);
+    }
+
     // Save
     const rgbPath = path.join(CACHE_DIR, `${name}.rgb`);
     fs.writeFileSync(rgbPath, rgb565Buffer);
-    console.log(`✓ Generated ${name}.rgb from emoji: ${emoji}`);
+    console.log(`✓ Generated ${name}.rgb from emoji: ${emoji} (${nonZeroBytes} bytes, ${nonZeroPercent}% coverage)`);
 
     return rgbPath;
 }

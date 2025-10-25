@@ -8,19 +8,58 @@
 
 After any significant event or before showing prompts to the user, you MUST call the MCP tool `update_keyboard_context`.
 
-**When to update:**
-- After git operations → context="git_operations"
-- After detecting errors → context="debugging"
-- Running tests → context="testing"
-- Before Yes/No questions → context="question_yesno"
-- Before multiple choice → context="question_choice"
-- File operations → context="file_operations"
-- Default/unclear → context="default"
+**MANDATORY Update Triggers (you MUST update for these):**
+
+1. **Errors & Failures** → context="debugging"
+   - ANY tool call that returns an error
+   - Network/API failures (rate limits, timeouts, connection errors)
+   - Compilation/build failures
+   - File not found, permission denied
+   - **Example**: WebFetch session limit → update_keyboard_context("debugging", "WebFetch rate limit exceeded")
+
+2. **Before User Prompts** → context varies
+   - Before asking Yes/No question → context="question_yesno"
+   - Before multiple choice → context="question_choice"
+   - Before file operation confirmation → context="file_operations"
+   - **Must update BEFORE the question appears to user**
+
+3. **After Completing Operations** → context varies
+   - After git commit/push → context="git_operations"
+   - After running tests → context="testing"
+   - After file operations → context="file_operations"
+   - After fixing bugs → context="debugging"
+
+4. **When Blocked/Waiting** → context="default"
+   - Waiting for long-running process
+   - Awaiting user decision
+   - Paused in middle of multi-step task
 
 **Timing is CRITICAL:**
 - Update keyboard BEFORE finishing your response
 - Buttons must be ready when user sees the prompt
 - Include specific details in the "detail" parameter
+
+**Examples of CORRECT usage:**
+
+```javascript
+// ❌ WRONG - Error occurred but no keyboard update
+WebFetch returns "Session limit reached"
+Assistant: "I hit the web fetch limit. Let me try a different approach..."
+
+// ✅ CORRECT - Update keyboard immediately after error
+WebFetch returns "Session limit reached"
+Assistant: Updates keyboard with context="debugging", detail="WebFetch session limit exceeded"
+Assistant: "I hit the web fetch limit. Should I skip this step or wait?"
+```
+
+```javascript
+// ❌ WRONG - Ask question without updating keyboard
+Assistant: "Should I proceed with the database migration?"
+
+// ✅ CORRECT - Update keyboard BEFORE asking
+Assistant: Updates keyboard with context="question_yesno", detail="Database migration will modify 50 records"
+Assistant: "Should I proceed with the database migration?"
+```
 
 **This is not optional** - keyboard UX depends on these updates.
 
@@ -274,3 +313,4 @@ curl -s http://localhost:8081/status | jq
 # Current button configuration
 curl -s http://localhost:8081/inputs | jq
 ```
+- For the T-Keyboard-S3, USBMode should be hardware (hwcdc)

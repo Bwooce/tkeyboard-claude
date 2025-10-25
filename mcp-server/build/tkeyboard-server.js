@@ -27,6 +27,8 @@ const config = {
 let tkeyboardClient = null;
 const inputQueue = [];
 const MAX_QUEUE_SIZE = 20;
+const messageQueue = []; // Queue messages when connection is down
+const MAX_MESSAGE_QUEUE = 5;
 let currentContext = {
     type: 'default',
     detail: '',
@@ -52,8 +54,30 @@ wss.on('connection', (ws) => {
     });
     ws.on('close', () => {
         console.log('[WS] T-Keyboard disconnected');
-        tkeyboardClient = null;
+        if (tkeyboardClient === ws) {
+            tkeyboardClient = null;
+        }
     });
+    ws.on('error', (err) => {
+        console.error('[WS] T-Keyboard connection error:', err.message);
+        if (tkeyboardClient === ws) {
+            tkeyboardClient = null;
+        }
+    });
+    // Ping/pong for connection health check
+    ws.on('pong', () => {
+        if (config.debug)
+            console.log('[WS] Pong received from keyboard');
+    });
+    // Send ping every 30 seconds to detect dead connections
+    const pingInterval = setInterval(() => {
+        if (tkeyboardClient === ws && ws.readyState === WebSocket.OPEN) {
+            ws.ping();
+        }
+        else {
+            clearInterval(pingInterval);
+        }
+    }, 30000);
     // Send initial state
     sendToKeyboard({
         type: 'status',
@@ -70,6 +94,15 @@ wss.on('connection', (ws) => {
             color: index === 0 ? '#00FFFF' : index === 1 ? '#FFFF00' : index === 2 ? '#FFFFFF' : '#00FF00'
         }))
     });
+    // Send any queued messages
+    if (messageQueue.length > 0) {
+        console.log(`[WS] Sending ${messageQueue.length} queued messages`);
+        while (messageQueue.length > 0) {
+            const msg = messageQueue.shift();
+            if (msg)
+                sendToKeyboard(msg);
+        }
+    }
 });
 // Handle T-Keyboard messages
 function handleKeyboardMessage(data) {
@@ -99,10 +132,32 @@ function sendToKeyboard(data) {
     if (tkeyboardClient && tkeyboardClient.readyState === WebSocket.OPEN) {
         const message = JSON.stringify(data);
         console.log(`[WS] → To keyboard: ${message.substring(0, 200)}${message.length > 200 ? '...' : ''}`);
-        tkeyboardClient.send(message);
+        try {
+            tkeyboardClient.send(message);
+        }
+        catch (err) {
+            console.error(`[WS] Send error:`, err.message);
+            // Connection is broken, clear client reference
+            tkeyboardClient = null;
+            // Queue the message for retry
+            queueMessage(data);
+        }
     }
     else {
-        console.log(`[WS] ✗ Cannot send to keyboard (not connected): ${JSON.stringify(data).substring(0, 100)}`);
+        console.log(`[WS] ✗ Not connected, queuing message`);
+        queueMessage(data);
+    }
+}
+// Queue message for later delivery
+function queueMessage(data) {
+    // Only queue update_options messages (button updates are important)
+    if (data.type === 'update_options') {
+        messageQueue.push(data);
+        // Limit queue size, keep only the most recent updates
+        while (messageQueue.length > MAX_MESSAGE_QUEUE) {
+            messageQueue.shift();
+        }
+        console.log(`[WS] Queued message (${messageQueue.length}/${MAX_MESSAGE_QUEUE})`);
     }
 }
 // Handle MCP tool calls (shared between stdio and HTTP proxy)

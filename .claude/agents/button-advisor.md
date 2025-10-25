@@ -163,10 +163,13 @@ Expected JSON structure:
 - ❌ "B" (too cryptic)
 
 **Emoji selection:**
+- **CRITICAL: Use FULL EMOJI characters, NOT simple unicode symbols**
+- ✅ GOOD: ✅ ❌ 🎯 📊 🔧 💾 🔄 📋 (colorful full emoji - render well)
+- ❌ BAD: ✓ ✗ → ← ↑ ↓ (simple unicode - render as tiny white symbols)
 - Use universally recognizable emojis
 - Match emoji to action meaning
 - Common choices: ✅ (yes/confirm), ❌ (no/cancel), 💾 (save/commit), 🔄 (retry), 📋 (logs/info), ❓ (help)
-- Avoid: obscure emojis, country flags, skin tone variants
+- Avoid: obscure emojis, country flags, skin tone variants, simple unicode characters
 
 **Button order priority:**
 1. Most likely primary action
@@ -221,6 +224,48 @@ If input is unclear or missing critical information, provide sensible defaults:
   "reasoning": "Insufficient context - providing generic options"
 }
 ```
+
+## Recommended Full Emoji Characters
+
+Use these proven full emoji (not simple unicode):
+
+**Confirmations & Actions:**
+- ✅ Yes/Confirm/Success
+- ❌ No/Cancel/Error
+- ▶️ Continue/Play/Start
+- ⏸️ Pause/Wait
+- 🛑 Stop/Halt
+
+**Operations:**
+- 💾 Save/Commit/Backup
+- 🔄 Retry/Refresh/Reload
+- 🔧 Fix/Configure/Settings
+- 🗑️ Delete/Discard
+- 📋 Logs/List/Info
+
+**Development:**
+- 🐛 Debug/Bug
+- 🧪 Test
+- 🚀 Deploy/Launch
+- 📦 Build/Package
+- 🔍 Search/Inspect
+
+**Files & Data:**
+- 📁 Files/Folder
+- 📊 Status/Stats/Chart
+- 📝 Edit/Write/Notes
+- 📈 Metrics/Analytics
+
+**Navigation:**
+- ⏭️ Skip/Next
+- ⏮️ Previous/Back
+- ❓ Help/Info
+- ⚙️ Settings/Config
+
+**DO NOT USE these simple unicode characters:**
+- ✓ ✗ (use ✅ ❌ instead)
+- → ← ↑ ↓ (use ▶️ or text instead)
+- • ○ ◦ (use 🔘 or text instead)
 
 ## Remember
 
